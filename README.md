@@ -407,3 +407,9 @@ Gmail needs 2-Step Verification and an *App password* (https://myaccount.google.
 works — e-mails are recorded as SKIPPED instead of sent. After editing `.env`, restart the server and use the *Send test e-mail* button.
 
 **Migrating:** run `npx prisma migrate deploy` (two new migrations: benches, then the opposite-party portal).
+
+
+
+git add .
+git commit -m "Updated project files"
+git push
