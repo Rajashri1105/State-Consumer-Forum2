@@ -1,0 +1,759 @@
+// ==========================================================================
+// State Consumer Forum Complaint Registration & Intelligent Hearing
+// Management Portal — Prisma Schema (PostgreSQL)
+// ==========================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// --------------------------------------------------------------------------
+// ENUMS
+// --------------------------------------------------------------------------
+
+enum Role {
+  CONSUMER
+  CLERK
+  JUDGE
+  REGISTRAR
+  OPPOSITE_PARTY
+  ADMIN
+}
+
+// A CLERK is either an intake (scrutiny) clerk who works from a shared
+// queue, or a court clerk who belongs to exactly one bench.
+enum ClerkType {
+  SCRUTINY
+  COURT
+}
+
+enum ComplaintStatus {
+  SUBMITTED
+  UNDER_VERIFICATION
+  ACCEPTED
+  REJECTED
+  PENDING_JUDGE_CONFIRMATION // legacy value, no longer used
+  PENDING_ALLOTMENT
+  DEFECTIVE
+  NEEDS_MANUAL_ASSIGNMENT
+  JUDGE_ASSIGNED
+  HEARING_SCHEDULED
+  HEARING_COMPLETED
+  JUDGMENT_UPLOADED
+  DISPOSED
+  CLOSED
+  WITHDRAWN
+  SETTLED
+}
+
+// Feature 1: Jurisdiction Determination Engine
+enum JurisdictionLevel {
+  DISTRICT_COMMISSION
+  STATE_COMMISSION
+  NATIONAL_COMMISSION
+}
+
+// Feature 4: Notice Delivery Tracker
+enum DeliveryChannel {
+  SMS
+  EMAIL
+}
+
+enum DeliveryStatus {
+  PENDING
+  DELIVERED
+  FAILED
+}
+
+enum Priority {
+  HIGH
+  MEDIUM
+  LOW
+}
+
+enum HearingStatus {
+  SCHEDULED
+  COMPLETED
+  ADJOURNED
+  CANCELLED
+}
+
+enum EvidenceType {
+  INVOICE
+  WARRANTY
+  IMAGE
+  DOCUMENT
+  OTHER
+}
+
+enum NotificationType {
+  COMPLAINT_SUBMITTED
+  COMPLAINT_VERIFIED
+  COMPLAINT_ACCEPTED
+  COMPLAINT_REJECTED
+  JUDGE_ASSIGNED
+  HEARING_SCHEDULED
+  HEARING_RESCHEDULED
+  HEARING_ADJOURNED
+  JUDGMENT_UPLOADED
+  CASE_CLOSED
+  JUDGE_ABSENCE_ALERT
+  REASSIGNMENT_APPROVED
+  DAILY_CASE_DIGEST
+  SYSTEM
+  JUDGE_CONFIRMATION_REQUEST
+  MANUAL_ASSIGNMENT_NEEDED
+  ESCALATION_ALERT
+  NOTICE_DELIVERY_FAILED
+  COMPLAINT_CLAIMED
+  COMPLAINT_ALLOTTED
+  COMPLAINT_DEFECTIVE
+  CASE_UPDATE
+  NOTICE_ISSUED
+  REPLY_FILED
+  EXTENSION_REQUESTED
+  EXTENSION_DECIDED
+  SETTLEMENT_OFFERED
+  SETTLEMENT_DECIDED
+  EX_PARTE_ELIGIBLE
+}
+
+// Where the opposite party stands on filing their written reply.
+enum ReplyStatus {
+  NOT_APPLICABLE   // notice not served yet (or no opposite-party email on file)
+  AWAITING_REPLY   // notice served, deadline running
+  REPLY_FILED
+  EX_PARTE_ELIGIBLE // deadline passed without a reply — the bench may proceed without them
+}
+
+enum RequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum OfferStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+  WITHDRAWN
+}
+
+enum ReassignmentStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+// --------------------------------------------------------------------------
+// USERS & AUTH
+// --------------------------------------------------------------------------
+
+model User {
+  id                      String    @id @default(uuid())
+  name                    String
+  email                   String    @unique
+  password                String
+  phone                   String?
+  address                 String?
+  role                    Role      @default(CONSUMER)
+  profileImage            String?
+  isEmailVerified         Boolean   @default(false)
+  emailVerificationToken  String?
+  emailVerificationExpiry DateTime?
+  passwordResetToken      String?
+  passwordResetExpiry     DateTime?
+  isActive                Boolean   @default(true)
+  // Clerks only: SCRUTINY (shared intake pool, no bench) or COURT (one bench)
+  clerkType               ClerkType?
+  benchId                 String?
+  bench                   Bench?    @relation(fields: [benchId], references: [id], onDelete: SetNull)
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
+
+  // Relations
+  refreshTokens        RefreshToken[]
+  judgeProfile         JudgeProfile?
+  complaintsFiled       Complaint[]        @relation("ConsumerComplaints")
+  complaintsVerified    Complaint[]        @relation("ClerkVerified")
+  complaintsAssigned    Complaint[]        @relation("ClerkAssignedComplaints")
+  evidenceUploaded      Evidence[]
+  hearingsCreated       Hearing[]          @relation("HearingCreatedBy")
+  notifications         Notification[]
+  auditLogs             AuditLog[]
+  timelineEntries       ComplaintTimeline[]
+  feedbackGiven         Feedback[]
+  complaintsAllotted    Complaint[]        @relation("ComplaintAllottedBy")
+  complaintsAsOppositeParty Complaint[]    @relation("OppositePartyComplaints")
+
+  @@index([email])
+  @@index([role])
+  @@index([benchId])
+  @@map("users")
+}
+
+model RefreshToken {
+  id        String   @id @default(uuid())
+  token     String   @unique
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  revoked   Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@map("refresh_tokens")
+}
+
+// --------------------------------------------------------------------------
+// BENCHES (courts) — a bench is a presiding judge plus its own court clerk(s).
+// Cases are allotted to a bench and everything after allotment is scoped to it.
+// --------------------------------------------------------------------------
+
+model Bench {
+  id         String   @id @default(uuid())
+  name       String   @unique          // e.g. "Bench 1"
+  courtRoom  String?
+  isActive   Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  judges     JudgeProfile[]
+  clerks     User[]
+  complaints Complaint[]
+  allotments CaseAllotment[] @relation("AllotmentToBench")
+
+  @@map("benches")
+}
+
+// Audit trail of every allotment / re-allotment between benches.
+model CaseAllotment {
+  id          String    @id @default(uuid())
+  complaintId String
+  complaint   Complaint @relation(fields: [complaintId], references: [id], onDelete: Cascade)
+  fromBenchId String?
+  toBenchId   String?
+  toBench     Bench?    @relation("AllotmentToBench", fields: [toBenchId], references: [id], onDelete: SetNull)
+  judgeId     String?
+  byUserId    String?
+  method      String    // AUTO_LEAST_LOADED | MANUAL | REASSIGNED | RECUSAL
+  reason      String?
+  createdAt   DateTime  @default(now())
+
+  @@index([complaintId])
+  @@map("case_allotments")
+}
+
+// --------------------------------------------------------------------------
+// JUDGE-SPECIFIC PROFILE
+// --------------------------------------------------------------------------
+
+model JudgeProfile {
+  id                 String   @id @default(uuid())
+  userId             String   @unique
+  user               User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  designation        String   @default("Member")
+  courtRoom          String?
+  specialization     String?
+  maxHearingsPerDay  Int      @default(8)
+  joiningDate        DateTime @default(now())
+  benchId            String?
+  bench              Bench?   @relation(fields: [benchId], references: [id], onDelete: SetNull)
+
+  assignedComplaints Complaint[] @relation("JudgeAssignedComplaints")
+  hearings           Hearing[]
+  judgments          Judgment[]
+  availability       JudgeAvailability[]
+  leaves             JudgeLeave[]
+
+  @@index([benchId])
+  @@map("judge_profiles")
+}
+
+model JudgeAvailability {
+  id                String       @id @default(uuid())
+  judgeId           String
+  judge             JudgeProfile @relation(fields: [judgeId], references: [id], onDelete: Cascade)
+  dayOfWeek         Int          // 0 = Sunday .. 6 = Saturday
+  isAvailable       Boolean      @default(true)
+  maxHearingsPerDay Int          @default(8)
+
+  @@unique([judgeId, dayOfWeek])
+  @@map("judge_availability")
+}
+
+// --------------------------------------------------------------------------
+// JUDGE LEAVE (ad-hoc unavailability — sick leave, vacation, etc.)
+// --------------------------------------------------------------------------
+
+model JudgeLeave {
+  id          String       @id @default(uuid())
+  judgeId     String
+  judge       JudgeProfile @relation(fields: [judgeId], references: [id], onDelete: Cascade)
+  startDate   DateTime
+  endDate     DateTime
+  reason      String
+  createdById String
+  createdAt   DateTime     @default(now())
+
+  @@index([judgeId])
+  @@index([startDate, endDate])
+  @@map("judge_leaves")
+}
+
+// --------------------------------------------------------------------------
+// CATEGORIES & PRIORITY RULES
+// --------------------------------------------------------------------------
+
+model ComplaintCategory {
+  id              String      @id @default(uuid())
+  name            String      @unique
+  description     String?
+  defaultPriority Priority    @default(MEDIUM)
+  isActive        Boolean     @default(true)
+  createdAt       DateTime    @default(now())
+
+  complaints      Complaint[]
+  priorityRules   PriorityRule[]
+
+  @@map("complaint_categories")
+}
+
+model PriorityRule {
+  id         String              @id @default(uuid())
+  keyword    String
+  categoryId String?
+  category   ComplaintCategory?  @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  priority   Priority
+  isActive   Boolean             @default(true)
+  createdAt  DateTime            @default(now())
+  updatedAt  DateTime            @updatedAt
+
+  @@index([keyword])
+  @@map("priority_rules")
+}
+
+// --------------------------------------------------------------------------
+// COMPLAINTS
+// --------------------------------------------------------------------------
+
+model Complaint {
+  id                  String            @id @default(uuid())
+  complaintNumber     String            @unique // e.g. SCF-2026-000001
+  title               String?           // short case title (auto-filled if not given)
+
+  consumerId          String
+  consumer            User              @relation("ConsumerComplaints", fields: [consumerId], references: [id])
+
+  categoryId          String
+  category            ComplaintCategory @relation(fields: [categoryId], references: [id])
+
+  product             String?
+  service             String?
+  sellerName          String
+  oppositePartyName   String
+  oppositePartyAddress String?
+  // --- Opposite-party portal ---
+  oppositePartyEmail   String?
+  oppositePartyPhone   String?
+  oppositePartyUserId  String?
+  oppositePartyUser    User?             @relation("OppositePartyComplaints", fields: [oppositePartyUserId], references: [id])
+  noticeIssuedAt       DateTime?
+  replyDueDate         DateTime?
+  replyStatus          ReplyStatus       @default(NOT_APPLICABLE)
+  replyFiledAt         DateTime?
+  extensionDaysGranted Int               @default(0)
+  replyReminder7Sent   Boolean           @default(false)
+  replyReminder1Sent   Boolean           @default(false)
+  replies              PartyReply[]
+  extensionRequests    ExtensionRequest[]
+  settlementOffers     SettlementOffer[]
+  purchaseDate        DateTime?
+  invoiceNumber       String?
+  complaintAmount     Decimal           @db.Decimal(12, 2)
+  courtFee            Decimal           @default(0) @db.Decimal(12, 2) // auto-computed: 5% of complaintAmount
+  description         String
+
+  // --- Feature 1: Jurisdiction Determination Engine ---
+  jurisdictionLevel   JurisdictionLevel?
+
+  // --- Feature 2: AI-Assisted Complaint Drafting ---
+  synopsisText          String?
+  synopsisGeneratedAt   DateTime?
+  synopsisManualConfirm Boolean         @default(false) // consumer confirmed a manually-written synopsis instead of generating one
+
+  // --- Feature 5: Escalation Alert for Overdue Hearings ---
+  isDelayed           Boolean           @default(false)
+  delayReason         String?
+  delayFlaggedAt      DateTime?
+  delayResolvedAt     DateTime?
+
+  // --- Bench allotment (replaces the old judge-clerk confirmation loop) ---
+  needsManualAssignment  Boolean        @default(false) // true = waiting in the Registrar's queue
+  benchId                String?
+  bench                  Bench?         @relation(fields: [benchId], references: [id])
+  allottedById           String?
+  allottedBy             User?          @relation("ComplaintAllottedBy", fields: [allottedById], references: [id])
+  allottedAt             DateTime?
+  defectRemarks          String?
+
+  status              ComplaintStatus   @default(SUBMITTED)
+  priority            Priority          @default(MEDIUM)
+  isPriorityOverridden Boolean          @default(false)
+
+  verifiedById        String?
+  verifiedBy          User?             @relation("ClerkVerified", fields: [verifiedById], references: [id])
+  rejectionReason     String?
+
+  assignedClerkId     String?           // scrutiny clerk who CLAIMED this complaint from the shared intake queue
+  assignedClerk       User?             @relation("ClerkAssignedComplaints", fields: [assignedClerkId], references: [id])
+
+  assignedJudgeId     String?
+  assignedJudge       JudgeProfile?     @relation("JudgeAssignedComplaints", fields: [assignedJudgeId], references: [id])
+
+  possibleDuplicateOfId String?
+  possibleDuplicateOf   Complaint?      @relation("DuplicateLink", fields: [possibleDuplicateOfId], references: [id])
+  duplicateFlaggedFor   Complaint[]     @relation("DuplicateLink")
+  duplicateOverridden   Boolean         @default(false)
+
+  submittedAt         DateTime          @default(now())
+  verifiedAt          DateTime?
+  acceptedAt          DateTime?
+  disposedAt          DateTime?
+  createdAt           DateTime          @default(now())
+  updatedAt           DateTime          @updatedAt
+
+  evidence            Evidence[]
+  hearings            Hearing[]
+  judgment            Judgment?
+  timeline            ComplaintTimeline[]
+  notifications       Notification[]
+  oppositeParties     OppositeParty[]
+  feedback            Feedback?
+  reassignmentRequests ReassignmentRequest[]
+  allotments          CaseAllotment[]
+
+  @@index([benchId])
+  @@index([oppositePartyUserId])
+  @@index([consumerId])
+  @@index([status])
+  @@index([priority])
+  @@index([assignedJudgeId])
+  @@index([assignedClerkId])
+  @@index([categoryId])
+  @@map("complaints")
+}
+
+// --------------------------------------------------------------------------
+// OPPOSITE PARTIES (a complaint may name more than one respondent)
+// --------------------------------------------------------------------------
+
+model OppositeParty {
+  id          String    @id @default(uuid())
+  complaintId String
+  complaint   Complaint @relation(fields: [complaintId], references: [id], onDelete: Cascade)
+  name        String
+  address     String?
+  email       String?   // gets e-mail updates; portal login is for the primary opposite party only
+  createdAt   DateTime  @default(now())
+
+  @@index([complaintId])
+  @@map("opposite_parties")
+}
+
+model ComplaintTimeline {
+  id          String    @id @default(uuid())
+  complaintId String
+  complaint   Complaint @relation(fields: [complaintId], references: [id], onDelete: Cascade)
+  stage       String    // e.g. SUBMITTED, VERIFIED, ACCEPTED, JUDGE_ASSIGNED, HEARING_SCHEDULED, HEARING_COMPLETED, JUDGMENT_UPLOADED, CLOSED
+  remarks     String?
+  actorId     String?
+  actor       User?     @relation(fields: [actorId], references: [id])
+  createdAt   DateTime  @default(now())
+
+  @@index([complaintId])
+  @@map("complaint_timeline")
+}
+
+// --------------------------------------------------------------------------
+// EVIDENCE / DOCUMENTS
+// --------------------------------------------------------------------------
+
+model Evidence {
+  id           String       @id @default(uuid())
+  complaintId  String
+  complaint    Complaint    @relation(fields: [complaintId], references: [id], onDelete: Cascade)
+  type         EvidenceType
+  fileName     String
+  filePath     String
+  fileSize     Int
+  mimeType     String
+  uploadedById String
+  uploadedBy   User         @relation(fields: [uploadedById], references: [id])
+  uploadedAt   DateTime     @default(now())
+
+  @@index([complaintId])
+  @@map("evidence")
+}
+
+// --------------------------------------------------------------------------
+// HEARINGS
+// --------------------------------------------------------------------------
+
+model Hearing {
+  id             String        @id @default(uuid())
+  complaintId    String
+  complaint      Complaint     @relation(fields: [complaintId], references: [id], onDelete: Cascade)
+  judgeId        String
+  judge          JudgeProfile  @relation(fields: [judgeId], references: [id])
+  scheduledDate  DateTime
+  scheduledTime  String        // "10:30 AM" style slot label
+  status         HearingStatus @default(SCHEDULED)
+  remarks        String?
+  adjournReason  String?
+  noticeFilePath String?
+  isSystemSuggested Boolean    @default(true)
+  createdById    String
+  createdBy      User          @relation("HearingCreatedBy", fields: [createdById], references: [id])
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  reassignmentRequests ReassignmentRequest[]
+  noticeDeliveries     NoticeDelivery[]
+
+  @@index([complaintId])
+  @@index([judgeId])
+  @@index([scheduledDate])
+  @@map("hearings")
+}
+
+// --------------------------------------------------------------------------
+// JUDGMENTS
+// --------------------------------------------------------------------------
+
+model Judgment {
+  id          String       @id @default(uuid())
+  complaintId String       @unique
+  complaint   Complaint    @relation(fields: [complaintId], references: [id], onDelete: Cascade)
+  judgeId     String
+  judge       JudgeProfile @relation(fields: [judgeId], references: [id])
+  filePath    String
+  summary     String
+  verdict     String       // e.g. "In favor of Consumer", "Dismissed", "Settled"
+  uploadedAt  DateTime     @default(now())
+
+  @@map("judgments")
+}
+
+// --------------------------------------------------------------------------
+// FEEDBACK (consumer rates their experience — only unlockable after judgment)
+// --------------------------------------------------------------------------
+
+model Feedback {
+  id          String    @id @default(uuid())
+  complaintId String    @unique
+  complaint   Complaint @relation(fields: [complaintId], references: [id], onDelete: Cascade)
+  consumerId  String
+  consumer    User      @relation(fields: [consumerId], references: [id])
+  rating      Int       // 1-5
+  comments    String?
+  submittedAt DateTime  @default(now())
+
+  @@map("feedback")
+}
+
+// --------------------------------------------------------------------------
+// JUDGE REASSIGNMENT REQUESTS (triggered by judge leave conflicts;
+// system recommends a replacement judge, clerk must approve)
+// --------------------------------------------------------------------------
+
+model ReassignmentRequest {
+  id                 String             @id @default(uuid())
+  hearingId          String
+  hearing            Hearing            @relation(fields: [hearingId], references: [id], onDelete: Cascade)
+  complaintId        String
+  complaint          Complaint          @relation(fields: [complaintId], references: [id], onDelete: Cascade)
+  originalJudgeId    String
+  recommendedJudgeId String?
+  recommendedDate    DateTime?
+  recommendedTime    String?
+  reason             String
+  status             ReassignmentStatus @default(PENDING)
+  createdAt          DateTime           @default(now())
+  resolvedAt         DateTime?
+  resolvedById       String?
+
+  @@index([hearingId])
+  @@index([status])
+  @@map("reassignment_requests")
+}
+
+// --------------------------------------------------------------------------
+// NOTICE DELIVERY TRACKER (Feature 4)
+// --------------------------------------------------------------------------
+
+model NoticeDelivery {
+  id            String          @id @default(uuid())
+  hearingId     String
+  hearing       Hearing         @relation(fields: [hearingId], references: [id], onDelete: Cascade)
+  channel       DeliveryChannel
+  status        DeliveryStatus  @default(PENDING)
+  acknowledged  Boolean         @default(false)
+  sentAt        DateTime        @default(now())
+  deliveredAt   DateTime?
+  failureReason String?
+
+  @@index([hearingId])
+  @@map("notice_deliveries")
+}
+
+// --------------------------------------------------------------------------
+// NOTIFICATIONS
+// --------------------------------------------------------------------------
+
+model Notification {
+  id                  String           @id @default(uuid())
+  userId              String
+  user                User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title               String
+  message             String
+  type                NotificationType
+  isRead              Boolean          @default(false)
+  relatedComplaintId  String?
+  relatedComplaint    Complaint?       @relation(fields: [relatedComplaintId], references: [id], onDelete: SetNull)
+  createdAt           DateTime         @default(now())
+
+  @@index([userId])
+  @@index([isRead])
+  @@map("notifications")
+}
+
+// --------------------------------------------------------------------------
+// AUDIT LOGS
+// --------------------------------------------------------------------------
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  userId     String?
+  user       User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  action     String
+  entityType String
+  entityId   String?
+  details    Json?
+  ipAddress  String?
+  createdAt  DateTime @default(now())
+
+  @@index([userId])
+  @@index([entityType])
+  @@map("audit_logs")
+}
+
+// --------------------------------------------------------------------------
+// FORUM CONFIGURATION
+// --------------------------------------------------------------------------
+
+model Holiday {
+  id                String   @id @default(uuid())
+  date              DateTime
+  description       String
+  isRecurringAnnual Boolean  @default(false)
+
+  @@unique([date])
+  @@map("holidays")
+}
+
+model ForumSettings {
+  id                       String   @id @default(uuid())
+  forumName                String   @default("State Consumer Disputes Redressal Forum")
+  address                  String?
+  contactEmail             String?
+  contactPhone             String?
+  maxHearingsPerDayDefault Int      @default(20)
+  workingDays              Json     @default("[1,2,3,4,5]") // Mon-Fri
+  sessionDurationMinutes   Int      @default(15)
+  courtStartTime           String   @default("10:30 AM")
+  courtEndTime             String   @default("04:30 PM")
+  lunchStartTime           String   @default("01:30 PM")
+  lunchEndTime             String   @default("02:30 PM")
+  hearingTimeSlots         Json     @default("[\"10:30 AM\",\"10:45 AM\",\"11:00 AM\",\"11:15 AM\",\"11:30 AM\",\"11:45 AM\",\"12:00 PM\",\"12:15 PM\",\"12:30 PM\",\"12:45 PM\",\"1:00 PM\",\"1:15 PM\",\"2:30 PM\",\"2:45 PM\",\"3:00 PM\",\"3:15 PM\",\"3:30 PM\",\"3:45 PM\",\"4:00 PM\",\"4:15 PM\"]")
+  overdueThresholdDays     Int      @default(30) // Feature 5: no action for more than X days -> escalation flag
+  allotmentMode            String   @default("AUTO") // AUTO = least-loaded bench on acceptance; MANUAL = Registrar allots
+  claimTimeoutHours        Int      @default(4)      // an untouched claimed complaint returns to the intake pool after this long
+  updatedAt                DateTime @updatedAt
+
+  @@map("forum_settings")
+}
+
+
+// --------------------------------------------------------------------------
+// OPPOSITE-PARTY PORTAL
+// --------------------------------------------------------------------------
+
+model PartyReply {
+  id          String    @id @default(uuid())
+  complaintId String
+  complaint   Complaint @relation(fields: [complaintId], references: [id], onDelete: Cascade)
+  userId      String
+  text        String
+  documents   Json      @default("[]") // [{ fileName, filePath, fileSize, mimeType }]
+  isLate      Boolean   @default(false)
+  createdAt   DateTime  @default(now())
+
+  @@index([complaintId])
+  @@map("party_replies")
+}
+
+model ExtensionRequest {
+  id            String        @id @default(uuid())
+  complaintId   String
+  complaint     Complaint     @relation(fields: [complaintId], references: [id], onDelete: Cascade)
+  requestedById String
+  reason        String
+  daysRequested Int
+  status        RequestStatus @default(PENDING)
+  daysGranted   Int?
+  decidedById   String?
+  decisionNote  String?
+  decidedAt     DateTime?
+  createdAt     DateTime      @default(now())
+
+  @@index([complaintId])
+  @@map("extension_requests")
+}
+
+model SettlementOffer {
+  id           String      @id @default(uuid())
+  complaintId  String
+  complaint    Complaint   @relation(fields: [complaintId], references: [id], onDelete: Cascade)
+  offeredById  String
+  amount       Decimal?    @db.Decimal(12, 2)
+  terms        String
+  status       OfferStatus @default(PENDING)
+  responseNote String?
+  respondedAt  DateTime?
+  createdAt    DateTime    @default(now())
+
+  @@index([complaintId])
+  @@map("settlement_offers")
+}
+
+// Every e-mail the system attempts, so Admin can see delivery and debug SMTP.
+model EmailLog {
+  id          String   @id @default(uuid())
+  toEmail     String
+  subject     String
+  event       String?
+  complaintId String?
+  status      String   // SENT | FAILED | SKIPPED (no SMTP configured)
+  error       String?
+  createdAt   DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([complaintId])
+  @@map("email_logs")
+}
