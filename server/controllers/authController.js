@@ -1,4 +1,5 @@
 const bcrypt = require('bcryptjs');
+const crypto = require('crypto');
 const prisma = require('../config/db');
 const config = require('../config/env');
 const ApiError = require('../utils/ApiError');
@@ -12,6 +13,8 @@ const logger = require('../config/logger');
 const SALT_ROUNDS = 12;
 const REFRESH_COOKIE_NAME = 'refreshToken';
 const REFRESH_COOKIE_PATH = '/api/v1/auth';
+const ACCOUNT_DELETION_ROLES = ['CONSUMER', 'OPPOSITE_PARTY'];
+const COMPLETED_CASE_STATUSES = ['REJECTED', 'DISPOSED', 'CLOSED', 'WITHDRAWN', 'SETTLED'];
 
 function refreshCookieOptions() {
   return {
@@ -119,7 +122,7 @@ async function resendVerification(req, res) {
   // Always respond the same way to avoid leaking which emails are registered.
   const genericResponse = new ApiResponse(200, null, 'If an account exists and is unverified, a new verification email has been sent.');
 
-  if (!user || user.isEmailVerified) return genericResponse.send(res);
+  if (!user || !user.isActive || user.isEmailVerified) return genericResponse.send(res);
 
   const { rawToken, hashedToken } = generateSecureToken();
   await prisma.user.update({
@@ -153,6 +156,9 @@ async function login(req, res) {
 
   const isMatch = await bcrypt.compare(password, user.password);
   if (!isMatch) throw ApiError.unauthorized('Invalid email or password');
+  if (ACCOUNT_DELETION_ROLES.includes(user.role) && !user.isEmailVerified) {
+    throw ApiError.forbidden('Please verify your email before logging in. Check your inbox for the verification link.');
+  }
 
   const accessToken = await issueTokenPair(user, res);
 
@@ -214,7 +220,7 @@ async function forgotPassword(req, res) {
   const user = await prisma.user.findUnique({ where: { email } });
 
   const genericResponse = new ApiResponse(200, null, 'If an account with that email exists, a password reset link has been sent.');
-  if (!user) return genericResponse.send(res);
+  if (!user || !user.isActive) return genericResponse.send(res);
 
   const { rawToken, hashedToken } = generateSecureToken();
   await prisma.user.update({
@@ -253,7 +259,14 @@ async function resetPassword(req, res) {
   const hashedPassword = await bcrypt.hash(password, SALT_ROUNDS);
   await prisma.user.update({
     where: { id: user.id },
-    data: { password: hashedPassword, passwordResetToken: null, passwordResetExpiry: null },
+    data: {
+      password: hashedPassword,
+      isEmailVerified: true,
+      emailVerificationToken: null,
+      emailVerificationExpiry: null,
+      passwordResetToken: null,
+      passwordResetExpiry: null,
+    },
   });
 
   // Revoke all existing sessions for this user as a security precaution.
@@ -322,6 +335,136 @@ async function updateProfile(req, res) {
   return new ApiResponse(200, { user: sanitizeUser(updated) }, 'Profile updated successfully').send(res);
 }
 
+function assertAccountDeletionRole(role) {
+  if (!ACCOUNT_DELETION_ROLES.includes(role)) {
+    throw ApiError.forbidden('Only consumer and opposite-party accounts can be deleted here');
+  }
+}
+
+function getAccountCasesWhere(user) {
+  return user.role === 'CONSUMER'
+    ? { consumerId: user.id }
+    : { oppositePartyUserId: user.id };
+}
+
+async function buildAccountDeletionStatus(db, user) {
+  const cases = await db.complaint.findMany({
+    where: getAccountCasesWhere(user),
+    select: { complaintNumber: true, status: true },
+  });
+  const incompleteCases = cases
+    .filter((complaint) => !COMPLETED_CASE_STATUSES.includes(complaint.status))
+    .map(({ complaintNumber, status }) => ({ complaintNumber, status }));
+
+  return {
+    eligible: incompleteCases.length === 0,
+    totalCases: cases.length,
+    incompleteCases,
+  };
+}
+
+// --------------------------------------------------------------------------
+// GET /auth/account-deletion-status  (authenticated consumer / opposite party)
+// --------------------------------------------------------------------------
+async function getAccountDeletionStatus(req, res) {
+  assertAccountDeletionRole(req.user.role);
+  const status = await buildAccountDeletionStatus(prisma, req.user);
+  return new ApiResponse(200, status, 'Account deletion eligibility fetched').send(res);
+}
+
+// --------------------------------------------------------------------------
+// DELETE /auth/account  (authenticated consumer / opposite party)
+// --------------------------------------------------------------------------
+async function deleteAccount(req, res) {
+  assertAccountDeletionRole(req.user.role);
+  const { currentPassword } = req.body;
+  const user = await prisma.user.findUnique({ where: { id: req.user.id } });
+  if (!user) throw ApiError.notFound('Account not found');
+
+  const isMatch = await bcrypt.compare(currentPassword, user.password);
+  if (!isMatch) throw ApiError.badRequest('Current password is incorrect');
+
+  const anonymizedPassword = await bcrypt.hash(crypto.randomBytes(32).toString('hex'), SALT_ROUNDS);
+  const result = await prisma.$transaction(async (tx) => {
+    const status = await buildAccountDeletionStatus(tx, user);
+    if (!status.eligible) {
+      throw ApiError.badRequest('Your account cannot be deleted until every complaint case is completed.');
+    }
+
+    const linkedCases = await tx.complaint.findMany({
+      where: getAccountCasesWhere(user),
+      select: { id: true },
+    });
+    const complaintIds = linkedCases.map(({ id }) => id);
+
+    if (complaintIds.length > 0) {
+      await tx.emailLog.updateMany({
+        where: {
+          complaintId: { in: complaintIds },
+          toEmail: { equals: user.email, mode: 'insensitive' },
+        },
+        data: { toEmail: 'deleted@deleted.invalid' },
+      });
+    }
+
+    if (user.role === 'OPPOSITE_PARTY' && complaintIds.length > 0) {
+      await tx.complaint.updateMany({
+        where: { id: { in: complaintIds } },
+        data: {
+          oppositePartyName: 'Deleted account',
+          oppositePartyAddress: null,
+          oppositePartyEmail: null,
+          oppositePartyPhone: null,
+        },
+      });
+      await tx.oppositeParty.updateMany({
+        where: {
+          complaintId: { in: complaintIds },
+          email: { equals: user.email, mode: 'insensitive' },
+        },
+        data: { name: 'Deleted account', address: null, email: null },
+      });
+    }
+
+    await tx.notification.deleteMany({ where: { userId: user.id } });
+    await tx.refreshToken.updateMany({
+      where: { userId: user.id, revoked: false },
+      data: { revoked: true },
+    });
+    await tx.user.update({
+      where: { id: user.id },
+      data: {
+        name: user.role === 'CONSUMER' ? 'Deleted consumer' : 'Deleted opposite party',
+        email: `deleted-${user.id}@deleted.invalid`,
+        password: anonymizedPassword,
+        phone: null,
+        address: null,
+        profileImage: null,
+        isActive: false,
+        isEmailVerified: false,
+        emailVerificationToken: null,
+        emailVerificationExpiry: null,
+        passwordResetToken: null,
+        passwordResetExpiry: null,
+      },
+    });
+
+    return { totalCases: status.totalCases };
+  });
+
+  await recordAudit({
+    userId: user.id,
+    action: 'ACCOUNT_DELETED',
+    entityType: 'User',
+    entityId: user.id,
+    details: { role: user.role, retainedCaseCount: result.totalCases },
+    ipAddress: req.ip,
+  });
+
+  res.clearCookie(REFRESH_COOKIE_NAME, { path: REFRESH_COOKIE_PATH });
+  return new ApiResponse(200, null, 'Your account has been deleted. Completed case records have been retained in anonymized form.').send(res);
+}
+
 module.exports = {
   register,
   verifyEmail,
@@ -334,4 +477,6 @@ module.exports = {
   changePassword,
   getMe,
   updateProfile,
+  getAccountDeletionStatus,
+  deleteAccount,
 };

@@ -185,7 +185,10 @@ async function respondToSettlement(req, res) {
 
   await prisma.$transaction([
     prisma.settlementOffer.update({ where: { id: offer.id }, data: { status: 'ACCEPTED', responseNote: note, respondedAt: new Date() } }),
-    prisma.complaint.update({ where: { id: complaint.id }, data: { status: 'SETTLED', disposedAt: new Date() } }),
+    prisma.complaint.update({
+      where: { id: complaint.id },
+      data: { status: 'SETTLED', replyStatus: 'SETTLED', disposedAt: new Date() },
+    }),
     prisma.hearing.updateMany({ where: { complaintId: complaint.id, status: 'SCHEDULED' }, data: { status: 'CANCELLED', remarks: 'Case settled between the parties.' } }),
   ]);
   const amountText = offer.amount !== null ? `Settled for ₹${Number(offer.amount).toLocaleString('en-IN')}. ` : '';
@@ -267,7 +270,7 @@ async function resendInvite(req, res) {
     });
   }
 
-  const setupUrl = `${config.clientUrl}/reset-password?token=${rawToken}`;
+  const setupUrl = `${config.clientUrl}/set-password?token=${rawToken}`;
 
   await sendEmail({
     to: complaint.oppositePartyEmail,
@@ -293,4 +296,3 @@ async function resendInvite(req, res) {
 }
 
 module.exports = { listMyCases, getResponses, fileReply, requestExtension, decideExtension, offerSettlement, respondToSettlement, withdrawSettlement, resendInvite };
-

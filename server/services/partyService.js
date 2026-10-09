@@ -46,12 +46,12 @@ async function ensurePartyAccount({ name, email, phone }) {
   const { rawToken, hashedToken } = generateSecureToken();
   const user = await prisma.user.create({
     data: {
-      name, email: lower, phone: phone || null, password, role: 'OPPOSITE_PARTY', isEmailVerified: true,
+      name, email: lower, phone: phone || null, password, role: 'OPPOSITE_PARTY', isEmailVerified: false,
       passwordResetToken: hashedToken,
       passwordResetExpiry: new Date(Date.now() + 14 * 24 * 3600 * 1000),
     },
   });
-  return { user, setupUrl: `${config.clientUrl}/reset-password?token=${rawToken}`, created: true };
+  return { user, setupUrl: `${config.clientUrl}/set-password?token=${rawToken}`, created: true };
 }
 
 /**
@@ -103,10 +103,13 @@ async function issueNotice(complaintId, actor) {
   }
 
   // 2) The notice itself — the timeline entry e-mails the party and tells the consumer.
+  // If the account was just created, include the setup URL in the notice email so the
+  // party can set their password directly from the notice (the CTA becomes "Set password & open case").
   const note = user
     ? `Reply due by ${dayjs(dueDate).format('DD MMM YYYY')} (30 days).`
     : `Reply due by ${dayjs(dueDate).format('DD MMM YYYY')}. This e-mail address already belongs to another account, so no portal login was created for the opposite party.`;
-  await addTimelineEntry(complaintId, 'NOTICE_ISSUED', note, actor?.id || null);
+  await addTimelineEntry(complaintId, 'NOTICE_ISSUED', note, actor?.id || null,
+    created && setupUrl ? { setupUrl } : {});
 
   return { issued: true, dueDate, accountCreated: created };
 }

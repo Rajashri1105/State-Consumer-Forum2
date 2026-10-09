@@ -27,6 +27,7 @@ import Register from './pages/auth/Register';
 import VerifyEmail from './pages/auth/VerifyEmail';
 import ForgotPassword from './pages/auth/ForgotPassword';
 import ResetPassword from './pages/auth/ResetPassword';
+import SetPassword from './pages/auth/SetPassword';
 
 import NotFound from './pages/NotFound';
 import Unauthorized from './pages/Unauthorized';
@@ -101,12 +102,13 @@ export default function App() {
               <Route path="/login" element={<Login />} />
               <Route path="/register" element={<Register />} />
               <Route path="/forgot-password" element={<ForgotPassword />} />
-              <Route path="/reset-password" element={<ResetPassword />} />
             </Route>
           </Route>
-          {/* Email verification is reachable whether logged in or not */}
+          {/* Verification and password-reset links must remain usable with an existing session. */}
           <Route element={<AuthLayout />}>
             <Route path="/verify-email" element={<VerifyEmail />} />
+            <Route path="/reset-password" element={<ResetPassword />} />
+            <Route path="/set-password" element={<SetPassword />} />
           </Route>
 
           {/* -------------------- Authenticated: Consumer -------------------- */}

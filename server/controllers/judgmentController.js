@@ -22,7 +22,7 @@ const { resolveOnHearingCompleted } = require('../services/escalationService');
 //   3. Makes the judgment PDF immediately downloadable on the consumer's
 //      dashboard (it already is, via GET /judgments/:complaintId, the
 //      moment the Judgment row + CLOSED status both exist)
-//   4. Fires the existing SMS/email notification to the consumer
+//   4. Fires the existing email notification to the consumer
 //   5. Records an immutable "Verdict Finalized" audit-log timestamp
 // --------------------------------------------------------------------------
 async function finalizeVerdict(req, res) {

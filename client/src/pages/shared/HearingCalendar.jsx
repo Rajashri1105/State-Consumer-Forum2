@@ -7,6 +7,7 @@ import { hearingService } from '../../services/hearingService';
 import Loader from '../../components/common/Loader';
 import DocketTag from '../../components/common/DocketTag';
 import { tokens } from '../../theme/theme';
+import { getComplaintTitle } from '../../utils/complaintTitle';
 
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
@@ -33,7 +34,7 @@ function HearingRow({ h, homePrefix }) {
           </Typography>
           <Stack direction="row" alignItems="center" gap={1} sx={{ mt: 0.5, flexWrap: 'wrap' }}>
             <DocketTag>{h.complaint?.complaintNumber}</DocketTag>
-            <Typography variant="caption" color="text.secondary" noWrap>{h.complaint?.title}</Typography>
+            <Typography variant="caption" color="text.secondary" noWrap>{getComplaintTitle(h.complaint)}</Typography>
           </Stack>
           <Typography variant="caption" color="text.disabled">Judge: {h.judge?.user?.name}</Typography>
         </Box>

@@ -129,6 +129,7 @@ enum ReplyStatus {
   AWAITING_REPLY   // notice served, deadline running
   REPLY_FILED
   EX_PARTE_ELIGIBLE // deadline passed without a reply — the bench may proceed without them
+  SETTLED
 }
 
 enum RequestStatus {
@@ -345,7 +346,7 @@ model PriorityRule {
 model Complaint {
   id                  String            @id @default(uuid())
   complaintNumber     String            @unique // e.g. SCF-2026-000001
-  title               String?           // short case title (auto-filled if not given)
+  title               String?           // standardized consumer vs opposite-party title
 
   consumerId          String
   consumer            User              @relation("ConsumerComplaints", fields: [consumerId], references: [id])

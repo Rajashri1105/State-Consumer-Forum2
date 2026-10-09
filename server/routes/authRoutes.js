@@ -11,6 +11,7 @@ const {
   changePasswordValidator,
   verifyEmailValidator,
   updateProfileValidator,
+  deleteAccountValidator,
 } = require('../validators/authValidators');
 
 const router = express.Router();
@@ -25,7 +26,9 @@ router.post('/forgot-password', authLimiter, forgotPasswordValidator, validate, 
 router.post('/reset-password', authLimiter, resetPasswordValidator, validate, authController.resetPassword);
 
 router.get('/me', authenticate, authController.getMe);
+router.get('/account-deletion-status', authenticate, authController.getAccountDeletionStatus);
 router.post('/change-password', authenticate, changePasswordValidator, validate, authController.changePassword);
 router.patch('/profile', authenticate, updateProfileValidator, validate, authController.updateProfile);
+router.delete('/account', authenticate, deleteAccountValidator, validate, authController.deleteAccount);
 
 module.exports = router;

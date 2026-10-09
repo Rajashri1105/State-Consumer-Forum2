@@ -56,7 +56,7 @@ export default function RegisterComplaint() {
   const { control, handleSubmit, formState: { errors } } = useForm({
     resolver: yupResolver(complaintSchema),
     defaultValues: {
-      title: '', categoryId: '', sellerName: '', oppositePartyName: '', oppositePartyAddress: '', oppositePartyEmail: '', oppositePartyPhone: '',
+      categoryId: '', sellerName: '', oppositePartyName: '', oppositePartyAddress: '', oppositePartyEmail: '', oppositePartyPhone: '',
       product: '', service: '', purchaseDate: '', invoiceNumber: '', complaintAmount: '', description: '',
     },
   });
@@ -209,12 +209,6 @@ export default function RegisterComplaint() {
           <Typography variant="subtitle1" fontWeight={700} sx={{ mb: 1.5 }}>Complaint Information</Typography>
           <Box component="form" onSubmit={handleSubmit(onSubmit)} noValidate>
             <Grid container spacing={2}>
-              <Grid item xs={12}>
-                <Controller name="title" control={control} render={({ field }) => (
-                  <TextField {...field} fullWidth label="Case Title (optional)" placeholder="e.g. Defective Refrigerator Purchase" />
-                )} />
-              </Grid>
-
               <Grid item xs={12} sm={6}>
                 <Controller
                   name="categoryId" control={control}

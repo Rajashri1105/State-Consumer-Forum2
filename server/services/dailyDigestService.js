@@ -2,6 +2,7 @@ const dayjs = require('dayjs');
 const prisma = require('../config/db');
 const { notifyUser } = require('./notificationService');
 const logger = require('../config/logger');
+const { getComplaintTitle } = require('../utils/complaintTitle');
 
 /**
  * Sends every judge with at least one hearing today a single in-app
@@ -17,7 +18,13 @@ async function sendDailyCaseDigest() {
     where: { status: 'SCHEDULED', scheduledDate: { gte: todayStart, lte: todayEnd } },
     include: {
       judge: { include: { user: { select: { id: true, name: true } } } },
-      complaint: { select: { complaintNumber: true, title: true } },
+      complaint: {
+        select: {
+          complaintNumber: true,
+          oppositePartyName: true,
+          consumer: { select: { name: true } },
+        },
+      },
     },
     orderBy: { scheduledTime: 'asc' },
   });
@@ -32,7 +39,7 @@ async function sendDailyCaseDigest() {
   let sentCount = 0;
   for (const [judgeUserId, { hearings }] of byJudge) {
     const summary = hearings
-      .map((h) => `${h.scheduledTime} — ${h.complaint.title || h.complaint.complaintNumber}`)
+      .map((h) => `${h.scheduledTime} — ${getComplaintTitle(h.complaint)}`)
       .join('; ');
 
     try {

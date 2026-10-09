@@ -12,4 +12,6 @@ export const authService = {
   resetPassword: (token, password) => api.post('/auth/reset-password', { token, password }),
   changePassword: (currentPassword, newPassword) => api.post('/auth/change-password', { currentPassword, newPassword }),
   updateProfile: (payload) => api.patch('/auth/profile', payload),
+  getAccountDeletionStatus: () => api.get('/auth/account-deletion-status'),
+  deleteAccount: (currentPassword) => api.delete('/auth/account', { data: { currentPassword } }),
 };

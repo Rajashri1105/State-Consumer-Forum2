@@ -1,30 +1,66 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useDispatch } from 'react-redux';
 import { useForm, Controller } from 'react-hook-form';
 import { yupResolver } from '@hookform/resolvers/yup';
+import { useNavigate } from 'react-router-dom';
 import {
   Box, Typography, Paper, Grid, TextField, Button, Stack, Divider,
-  Avatar, Chip,
+  Avatar, Chip, Alert, Dialog, DialogTitle, DialogContent,
+  DialogContentText, DialogActions,
 } from '@mui/material';
 import { toast } from 'react-toastify';
-import { Save, KeyRound } from 'lucide-react';
+import { Save, KeyRound, Trash2 } from 'lucide-react';
 import { useAuth } from '../../hooks/useAuth';
 import { authService } from '../../services/authService';
-import { setUser } from '../../redux/slices/authSlice';
+import { logoutUser, setUser } from '../../redux/slices/authSlice';
 import { changePasswordSchema } from '../../utils/validationSchemas';
 import { tokens } from '../../theme/theme';
 
-const ROLE_LABEL = { CONSUMER: 'Consumer', CLERK: 'Forum Clerk', JUDGE: 'Judge', ADMIN: 'Administrator' };
+const ROLE_LABEL = {
+  CONSUMER: 'Consumer',
+  OPPOSITE_PARTY: 'Opposite Party',
+  CLERK: 'Forum Clerk',
+  JUDGE: 'Judge',
+  ADMIN: 'Administrator',
+};
 
 export default function Profile() {
   const { user, judgeProfile } = useAuth();
   const dispatch = useDispatch();
+  const navigate = useNavigate();
 
   const [name, setName] = useState(user?.name || '');
   const [phone, setPhone] = useState(user?.phone || '');
   const [address, setAddress] = useState(user?.address || '');
   const [savingProfile, setSavingProfile] = useState(false);
   const [changingPassword, setChangingPassword] = useState(false);
+  const [deletionStatus, setDeletionStatus] = useState({ loading: true, eligible: false, incompleteCases: [], error: '' });
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [deletePassword, setDeletePassword] = useState('');
+  const [deletingAccount, setDeletingAccount] = useState(false);
+  const [deleteError, setDeleteError] = useState('');
+
+  useEffect(() => {
+    if (!['CONSUMER', 'OPPOSITE_PARTY'].includes(user?.role)) return undefined;
+
+    let cancelled = false;
+    authService.getAccountDeletionStatus()
+      .then(({ data }) => {
+        if (!cancelled) setDeletionStatus({ loading: false, ...data.data, error: '' });
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setDeletionStatus({
+            loading: false,
+            eligible: false,
+            incompleteCases: [],
+            error: err.response?.data?.message || 'Unable to check account deletion eligibility.',
+          });
+        }
+      });
+
+    return () => { cancelled = true; };
+  }, [user?.role]);
 
   const { control, handleSubmit, reset, formState: { errors } } = useForm({
     resolver: yupResolver(changePasswordSchema),
@@ -54,6 +90,21 @@ export default function Profile() {
       toast.error(err.response?.data?.message || 'Failed to change password');
     } finally {
       setChangingPassword(false);
+    }
+  };
+
+  const onDeleteAccount = async () => {
+    setDeleteError('');
+    setDeletingAccount(true);
+    try {
+      await authService.deleteAccount(deletePassword);
+      toast.success('Your account has been deleted.');
+      await dispatch(logoutUser());
+      navigate('/login', { replace: true });
+    } catch (err) {
+      setDeleteError(err.response?.data?.message || 'Unable to delete your account. Please try again.');
+    } finally {
+      setDeletingAccount(false);
     }
   };
 
@@ -141,6 +192,80 @@ export default function Profile() {
           </Stack>
         </Box>
       </Paper>
+
+      {['CONSUMER', 'OPPOSITE_PARTY'].includes(user?.role) && (
+        <Paper variant="outlined" sx={{ p: { xs: 2.5, md: 3.5 }, mt: 3 }}>
+          <Typography variant="subtitle1" fontWeight={700} gutterBottom>Delete Account</Typography>
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+            You can delete your account only after every complaint case linked to you is complete. Your login and profile information will be removed; completed case records will be retained in redacted form.
+          </Typography>
+
+          {deletionStatus.error ? (
+            <Alert severity="error" sx={{ mb: 2 }}>{deletionStatus.error}</Alert>
+          ) : deletionStatus.loading ? (
+            <Alert severity="info" sx={{ mb: 2 }}>Checking your case status…</Alert>
+          ) : !deletionStatus.eligible ? (
+            <Alert severity="warning" sx={{ mb: 2 }}>
+              Account deletion is unavailable until all cases are completed.
+              {deletionStatus.incompleteCases.length > 0 && (
+                <Box component="ul" sx={{ mb: 0, pl: 2.5 }}>
+                  {deletionStatus.incompleteCases.map((complaint) => (
+                    <li key={complaint.complaintNumber}>
+                      {complaint.complaintNumber}: {complaint.status.replaceAll('_', ' ').toLowerCase()}
+                    </li>
+                  ))}
+                </Box>
+              )}
+            </Alert>
+          ) : (
+            <Alert severity="success" sx={{ mb: 2 }}>All your cases are complete. Your account is eligible for deletion.</Alert>
+          )}
+
+          <Button
+            variant="outlined"
+            color="error"
+            startIcon={<Trash2 size={16} />}
+            disabled={deletionStatus.loading || !deletionStatus.eligible || Boolean(deletionStatus.error)}
+            onClick={() => {
+              setDeletePassword('');
+              setDeleteError('');
+              setDeleteDialogOpen(true);
+            }}
+          >
+            Delete My Account
+          </Button>
+        </Paper>
+      )}
+
+      <Dialog open={deleteDialogOpen} onClose={() => !deletingAccount && setDeleteDialogOpen(false)} fullWidth maxWidth="sm">
+        <DialogTitle>Delete your account?</DialogTitle>
+        <DialogContent>
+          <DialogContentText sx={{ mb: 2 }}>
+            This permanently removes your ability to log in and removes your profile details. Completed case records are retained in redacted form. Enter your current password to confirm.
+          </DialogContentText>
+          {deleteError && <Alert severity="error" sx={{ mb: 2 }}>{deleteError}</Alert>}
+          <TextField
+            autoFocus
+            fullWidth
+            type="password"
+            label="Current password"
+            value={deletePassword}
+            onChange={(event) => setDeletePassword(event.target.value)}
+            autoComplete="current-password"
+          />
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2 }}>
+          <Button onClick={() => setDeleteDialogOpen(false)} disabled={deletingAccount}>Cancel</Button>
+          <Button
+            color="error"
+            variant="contained"
+            onClick={onDeleteAccount}
+            disabled={deletingAccount || !deletePassword}
+          >
+            {deletingAccount ? 'Deleting…' : 'Permanently Delete Account'}
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Box>
   );
 }

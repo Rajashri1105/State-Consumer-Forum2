@@ -14,6 +14,7 @@ const { generateHearingNotice } = require('../services/pdfService');
 const { sendAndLogNotice, getDeliveryStatus, resendChannel } = require('../services/deliveryTrackerService');
 const { resolveOnHearingCompleted } = require('../services/escalationService');
 const { assertBenchClerkOrOversight, isCourtClerk, getJudgeProfileId } = require('../services/scopeService');
+const { getComplaintTitle } = require('../utils/complaintTitle');
 
 const HEARING_INCLUDE = {
   complaint: {
@@ -111,7 +112,7 @@ async function scheduleHearing(req, res) {
     require('../config/logger').error('Failed to auto-generate hearing notice:', err.message);
   }
 
-  // Feature 4: Notice Delivery Tracker — log SMS + Email delivery status.
+  // Feature 4: Notice Delivery Tracker — log email delivery status.
   await sendAndLogNotice(hearing, hearing.complaint);
 
   await prisma.complaint.update({ where: { id: complaintId }, data: { status: 'HEARING_SCHEDULED' } });
@@ -125,7 +126,7 @@ async function scheduleHearing(req, res) {
   await notifyUser({
     userId: hearing.judge.user.id,
     title: 'Hearing Scheduled — Case on Your Docket',
-    message: `${hearing.complaint.title || complaint.complaintNumber}: hearing set for ${dayjs(finalDate).format('DD MMM YYYY')} at ${finalTime}.`,
+    message: `${getComplaintTitle(hearing.complaint)}: hearing set for ${dayjs(finalDate).format('DD MMM YYYY')} at ${finalTime}.`,
     type: 'HEARING_SCHEDULED',
     relatedComplaintId: complaintId,
   });
@@ -164,7 +165,7 @@ async function rescheduleHearing(req, res) {
     require('../config/logger').error('Failed to regenerate hearing notice:', err.message);
   }
 
-  // Feature 4: log delivery status for the re-issued notice.
+  // Feature 4: log email delivery status for the re-issued notice.
   await sendAndLogNotice(updated, updated.complaint);
 
   await addTimelineEntry(hearing.complaintId, 'HEARING_RESCHEDULED', `Rescheduled to ${dayjs(scheduledDate).format('DD MMM YYYY')} at ${scheduledTime}.`, req.user.id, { audience: 'PARTY' });
@@ -177,7 +178,7 @@ async function rescheduleHearing(req, res) {
   await notifyUser({
     userId: updated.judge.user.id,
     title: 'Hearing Rescheduled',
-    message: `${updated.complaint.title || hearing.complaint.complaintNumber}: hearing moved to ${dayjs(scheduledDate).format('DD MMM YYYY')} at ${scheduledTime}.`,
+    message: `${getComplaintTitle(updated.complaint)}: hearing moved to ${dayjs(scheduledDate).format('DD MMM YYYY')} at ${scheduledTime}.`,
     type: 'HEARING_RESCHEDULED',
     relatedComplaintId: hearing.complaintId,
   });
@@ -256,6 +257,9 @@ async function getNoticeStatus(req, res) {
 // --------------------------------------------------------------------------
 async function resendNotice(req, res) {
   const { id, channel } = req.params;
+  if (channel.toUpperCase() !== 'EMAIL') {
+    throw ApiError.badRequest('Only email notice delivery is supported');
+  }
   const hearing = await prisma.hearing.findUnique({ where: { id }, include: { complaint: true } });
   if (!hearing) throw ApiError.notFound('Hearing not found');
   assertBenchClerkOrOversight(hearing.complaint, req.user);

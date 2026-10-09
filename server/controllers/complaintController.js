@@ -11,6 +11,7 @@ const { fireWorkflowNotification } = require('../services/workflowNotifier');
 const { notifyUser } = require('../services/notificationService');
 const { recordAudit } = require('../services/auditService');
 const { generateComplaintReceipt, generateSynopsisPdf } = require('../services/pdfService');
+const { getComplaintTitle } = require('../utils/complaintTitle');
 const { determineJurisdiction } = require('../services/jurisdictionEngine');
 const { generateSynopsis } = require('../services/synopsisService');
 const { checkCompleteness } = require('../services/completenessChecker');
@@ -48,7 +49,7 @@ const COURT_FEE_RATE = 0.05; // 5% of the claim amount, per forum policy
 
 async function createComplaint(req, res) {
   const {
-    title, categoryId, sellerName, oppositePartyName, oppositePartyAddress, oppositePartyEmail, oppositePartyPhone,
+    categoryId, sellerName, oppositePartyName, oppositePartyAddress, oppositePartyEmail, oppositePartyPhone,
     product, service, purchaseDate, invoiceNumber, complaintAmount,
     description, overrideDuplicateWarning, additionalOppositeParties,
     synopsisText, synopsisManualConfirm,
@@ -92,7 +93,7 @@ async function createComplaint(req, res) {
   const complaint = await prisma.complaint.create({
     data: {
       complaintNumber,
-      title: title?.trim() || `${sellerName} vs ${oppositePartyName}`,
+      title: getComplaintTitle({ consumer: { name: req.user.name }, oppositePartyName }),
       consumerId: req.user.id,
       categoryId,
       sellerName,

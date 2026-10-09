@@ -10,6 +10,7 @@ import Loader from '../../components/common/Loader';
 import DocketTag from '../../components/common/DocketTag';
 import { StatusChip, PriorityChip } from '../../components/common/StatusChips';
 import { tokens } from '../../theme/theme';
+import { getComplaintTitle } from '../../utils/complaintTitle';
 
 const STATUS_OPTIONS = [
   '', 'JUDGE_ASSIGNED', 'HEARING_SCHEDULED', 'HEARING_COMPLETED', 'JUDGMENT_UPLOADED', 'DISPOSED', 'CLOSED',
@@ -84,7 +85,7 @@ export default function JudgeCaseList() {
               >
                 <Box sx={{ minWidth: 0, flex: '1 1 280px' }}>
                   <DocketTag>{c.complaintNumber}</DocketTag>
-                  <Typography variant="body2" sx={{ mt: 0.5 }} noWrap>{c.consumer?.name} · {c.sellerName} vs {c.oppositePartyName}</Typography>
+                  <Typography variant="body2" sx={{ mt: 0.5 }} noWrap>{getComplaintTitle(c)}</Typography>
                   <Typography variant="caption" color="text.secondary">
                     Filed {dayjs(c.submittedAt).format('DD MMM YYYY')} · {c.category?.name}
                   </Typography>

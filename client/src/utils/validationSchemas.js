@@ -44,7 +44,6 @@ export const changePasswordSchema = yup.object({
 });
 
 export const complaintSchema = yup.object({
-  title: yup.string().trim().max(150, 'Case title must be under 150 characters'),
   categoryId: yup.string().required('Select a complaint category'),
   sellerName: yup.string().trim().required('Seller / trader name is required'),
   oppositePartyName: yup.string().trim().required('Opposite party name is required'),

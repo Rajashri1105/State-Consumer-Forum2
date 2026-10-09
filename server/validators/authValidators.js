@@ -52,6 +52,10 @@ const updateProfileValidator = [
   body('address').optional().trim(),
 ];
 
+const deleteAccountValidator = [
+  body('currentPassword').notEmpty().withMessage('Current password is required'),
+];
+
 module.exports = {
   registerValidator,
   loginValidator,
@@ -60,4 +64,5 @@ module.exports = {
   changePasswordValidator,
   verifyEmailValidator,
   updateProfileValidator,
+  deleteAccountValidator,
 };

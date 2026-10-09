@@ -1,5 +1,6 @@
 const { PDFDocument, StandardFonts, rgb } = require('pdf-lib');
 const dayjs = require('dayjs');
+const { getComplaintTitle } = require('../utils/complaintTitle');
 
 const NAVY = rgb(0.031, 0.169, 0.294); // approx #0B3C5D — matches the frontend's design tokens
 const GREY = rgb(0.4, 0.4, 0.4);
@@ -33,7 +34,7 @@ async function generateComplaintReceipt(complaint) {
   const page = doc.addPage([595.28, 841.89]); // A4
   let y = drawHeader(page, bold, font, 'Complaint Registration Receipt');
 
-  page.drawText(complaint.title || complaint.complaintNumber, { x: 40, y, size: 16, font: bold, color: NAVY });
+  page.drawText(getComplaintTitle(complaint), { x: 40, y, size: 16, font: bold, color: NAVY });
   y -= 22;
   page.drawText(complaint.complaintNumber, { x: 40, y, size: 12, font, color: GREY });
   y -= 36;
@@ -93,7 +94,7 @@ async function generateHearingNotice(hearing, complaint) {
 
   page.drawText(`Complaint No. ${complaint.complaintNumber}`, { x: 40, y, size: 14, font: bold, color: NAVY });
   y -= 20;
-  page.drawText(complaint.title || '', { x: 40, y, size: 11, font, color: GREY });
+  page.drawText(getComplaintTitle(complaint), { x: 40, y, size: 11, font, color: GREY });
   y -= 30;
 
   const rows = [
@@ -142,7 +143,7 @@ async function generateSynopsisPdf(complaint) {
   let page = doc.addPage([595.28, 841.89]);
   let y = drawHeader(page, bold, font, 'Formal Complaint Synopsis');
 
-  page.drawText(complaint.title || complaint.complaintNumber, { x: 40, y, size: 16, font: bold, color: NAVY });
+  page.drawText(getComplaintTitle(complaint), { x: 40, y, size: 16, font: bold, color: NAVY });
   y -= 22;
   page.drawText(complaint.complaintNumber, { x: 40, y, size: 12, font, color: GREY });
   y -= 36;

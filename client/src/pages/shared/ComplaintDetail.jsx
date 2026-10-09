@@ -26,6 +26,7 @@ import FileDropzone from '../../components/common/FileDropzone';
 import { fileUrl } from '../../utils/fileUrl';
 import PartyResponsePanel from '../../components/common/PartyResponsePanel';
 import { tokens } from '../../theme/theme';
+import { getComplaintTitle } from '../../utils/complaintTitle';
 
 const HEARING_STATUS_COLOR = {
   SCHEDULED: tokens.info, COMPLETED: tokens.success, ADJOURNED: tokens.warning, CANCELLED: tokens.inkMuted,
@@ -524,7 +525,7 @@ export default function ComplaintDetail() {
       <Stack direction="row" justifyContent="space-between" alignItems="flex-start" flexWrap="wrap" gap={2} sx={{ mb: 3 }}>
         <Box>
           <DocketTag>{complaint.complaintNumber}</DocketTag>
-          <Typography variant="h6" sx={{ mt: 1 }}>{complaint.title || `${complaint.sellerName} vs ${complaint.oppositePartyName}`}</Typography>
+          <Typography variant="h6" sx={{ mt: 1 }}>{getComplaintTitle(complaint)}</Typography>
           <Typography variant="body2" color="text.secondary">
             Filed {dayjs(complaint.submittedAt).format('DD MMM YYYY, hh:mm A')} · {complaint.category?.name}
           </Typography>

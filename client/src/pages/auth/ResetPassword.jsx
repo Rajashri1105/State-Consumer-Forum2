@@ -13,6 +13,7 @@ export default function ResetPassword() {
   const navigate = useNavigate();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [resetComplete, setResetComplete] = useState(false);
 
   const { register, handleSubmit, formState: { errors } } = useForm({
     resolver: yupResolver(resetPasswordSchema),
@@ -23,8 +24,8 @@ export default function ResetPassword() {
     setLoading(true);
     try {
       await authService.resetPassword(token, password);
-      toast.success('Password reset successfully. Please log in.');
-      navigate('/login');
+      setResetComplete(true);
+      toast.success('Password reset and email verified successfully.');
     } catch (err) {
       setError(err.response?.data?.message || 'This reset link is invalid or has expired.');
     } finally {
@@ -33,7 +34,26 @@ export default function ResetPassword() {
   };
 
   if (!token) {
-    return <Alert severity="error">This reset link is missing a token. Please request a new one.</Alert>;
+    return (
+      <Box>
+        <Alert severity="error" sx={{ mb: 2 }}>This reset link is missing a token. Please request a new one.</Alert>
+        <Link component={RouterLink} to="/forgot-password">Request another reset link</Link>
+      </Box>
+    );
+  }
+
+  if (resetComplete) {
+    return (
+      <Box>
+        <Typography variant="h5" fontWeight={700} gutterBottom>Password updated</Typography>
+        <Alert severity="success" sx={{ mb: 2 }}>
+          Your password has been reset and your email verified. Your old password will no longer work; log in with the new password you just created.
+        </Alert>
+        <Button variant="contained" size="large" fullWidth onClick={() => navigate('/login', { replace: true })}>
+          Continue to log in
+        </Button>
+      </Box>
+    );
   }
 
   return (
@@ -53,7 +73,7 @@ export default function ResetPassword() {
       </Box>
 
       <Typography variant="body2" sx={{ mt: 3, textAlign: 'center' }}>
-        <Link component={RouterLink} to="/login">Back to log in</Link>
+        <Link component={RouterLink} to="/forgot-password">Request a new reset link</Link>
       </Typography>
     </Box>
   );

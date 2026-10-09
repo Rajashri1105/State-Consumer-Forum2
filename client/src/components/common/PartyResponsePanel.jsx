@@ -66,7 +66,7 @@ export default function PartyResponsePanel({ complaintId, user, complaintStatus,
         <Stack direction="row" alignItems="center" gap={1}>
           <MessageSquare size={18} color={tokens.ashokaNavy} />
           <Typography variant="subtitle1" fontWeight={700}>Opposite Party&apos;s Response</Typography>
-          <ReplyStatusChip status={data.replyStatus} />
+          <ReplyStatusChip status={complaintStatus === 'SETTLED' ? 'SETTLED' : data.replyStatus} />
         </Stack>
         {data.replyDueDate && (
           <Stack direction="row" alignItems="center" gap={0.75}>

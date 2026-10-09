@@ -35,7 +35,19 @@ export default function Login() {
         Access your complaints, hearings, and case updates.
       </Typography>
 
-      {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
+      {error && (
+        <Alert severity="error" sx={{ mb: 2 }}>
+          {error}
+          {error.includes('verify your email') && (
+            <>
+              {' '}
+              <Link component={RouterLink} to="/forgot-password" color="inherit" fontWeight={700}>
+                Request a password reset to verify your email.
+              </Link>
+            </>
+          )}
+        </Alert>
+      )}
 
       <Box component="form" onSubmit={handleSubmit(onSubmit)} noValidate>
         <Stack gap={2.25}>

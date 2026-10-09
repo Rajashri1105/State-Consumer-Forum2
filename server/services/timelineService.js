@@ -51,7 +51,7 @@ async function addTimelineEntry(complaintId, stageKey, remarks = null, actorId =
     // Lazy require avoids a circular import (caseMailer -> notificationService -> db).
     const { notifyCaseParties } = require('./caseMailer');
     // Fire-and-forget: a slow or failing mail server must never slow down or break the action.
-    notifyCaseParties(complaintId, stageKey, remarks, { audience: opts.audience })
+    notifyCaseParties(complaintId, stageKey, remarks, { audience: opts.audience, setupUrl: opts.setupUrl })
       .catch((err) => logger.error(`Case e-mail for ${stageKey} failed: ${err.message}`));
   }
   return entry;

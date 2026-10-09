@@ -11,6 +11,7 @@ import Loader from '../../components/common/Loader';
 import DocketTag from '../../components/common/DocketTag';
 import { StatusChip, PriorityChip } from '../../components/common/StatusChips';
 import { tokens } from '../../theme/theme';
+import { getComplaintTitle } from '../../utils/complaintTitle';
 
 const STATUS_OPTIONS = [
   '', 'SUBMITTED', 'UNDER_VERIFICATION', 'ACCEPTED', 'REJECTED', 'JUDGE_ASSIGNED',
@@ -111,7 +112,7 @@ export default function ComplaintList() {
               >
                 <Box sx={{ minWidth: 0, flex: '1 1 260px' }}>
                   <DocketTag>{c.complaintNumber}</DocketTag>
-                  <Typography variant="body2" sx={{ mt: 0.5 }} noWrap>{c.sellerName} vs {c.oppositePartyName}</Typography>
+                  <Typography variant="body2" sx={{ mt: 0.5 }} noWrap>{getComplaintTitle(c)}</Typography>
                   <Typography variant="caption" color="text.secondary">
                     Filed {dayjs(c.submittedAt).format('DD MMM YYYY')} · {c.category?.name}
                   </Typography>

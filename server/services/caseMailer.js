@@ -134,7 +134,7 @@ async function loadCase(complaintId) {
  * E-mail (and, for the opposite party, in-app notify) everyone who should hear
  * about `stageKey`. Never throws — failures are logged and stored in email_logs.
  */
-async function notifyCaseParties(complaintId, stageKey, remarks = null, { audience = 'BOTH' } = {}) {
+async function notifyCaseParties(complaintId, stageKey, remarks = null, { audience = 'BOTH', setupUrl = null } = {}) {
   const stage = STAGES[stageKey];
   if (!stage) return { skipped: true };
 
@@ -196,12 +196,20 @@ async function notifyCaseParties(complaintId, stageKey, remarks = null, { audien
         if (extra.email) recipients.push({ email: extra.email, name: extra.name, portal: false });
       }
       for (const r of recipients) {
+        // For a brand-new account (setupUrl provided) the party hasn't set a password yet,
+        // so the CTA should take them to the set-password page, not the portal case page.
+        let cta;
+        if (setupUrl && stageKey === 'NOTICE_ISSUED') {
+          cta = { url: setupUrl, label: 'Set password & open case' };
+        } else if (r.portal) {
+          cta = { url: `${config.clientUrl}/party/cases/${complaint.id}`, label: 'Open case on the portal' };
+        }
         jobs.push({
           to: r.email, name: r.name,
           subject: `${p.headline} — ${complaint.complaintNumber}`,
           html: caseUpdateTemplate({
             name: r.name, complaintNumber: complaint.complaintNumber, headline: p.headline, message: p.message, details,
-            cta: r.portal ? { url: `${config.clientUrl}/party/cases/${complaint.id}`, label: 'Open case on the portal' } : undefined,
+            cta,
           }),
         });
       }

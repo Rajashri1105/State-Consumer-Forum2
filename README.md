@@ -1,4 +1,4 @@
-chan# State Consumer Forum Complaint Registration and Intelligent Hearing Management Portal
+change12# State Consumer Forum Complaint Registration and Intelligent Hearing Management Portal
 
 A full-stack web application that digitizes the complete consumer dispute resolution
 process — from complaint registration to final judgment — for a State Consumer
@@ -166,6 +166,7 @@ docker compose up -d
 
 - Backend: `http://localhost:5000`
 - Frontend: `http://localhost:8080`
+- Password-reset and verification links use `DOCKER_CLIENT_URL` (default `http://localhost:8080`); set it to the address used to open the Docker frontend if different.
 
 ---
 
@@ -213,6 +214,14 @@ npm install
 npm run dev
 ```
 
+Vite listens on port `5173` on all network interfaces and prints the available
+LAN URL in this client terminal. Open the displayed `Network` URL on another
+device connected to the same network. The IP address (for example,
+`192.168.137.1`) depends on the active network adapter and may change; port
+`5173` is fixed, and Vite will report an error rather than silently switching
+ports if it is already occupied. Allow Node.js through the Windows firewall if
+other devices cannot connect.
+
 The app runs on `http://localhost:5173`.
 
 ---
@@ -244,6 +253,7 @@ See `.env.example` (root) and `client/.env.example` for the full list. Key ones:
 | `DATABASE_URL` | PostgreSQL connection string |
 | `JWT_ACCESS_SECRET` / `JWT_REFRESH_SECRET` | Change these in production |
 | `SMTP_*` | Optional — without SMTP configured, emails are logged instead of sent, so local development works without an email account |
+| `RATE_LIMIT_MAX_REQUESTS` | API rate limit per IP per 15 minutes (default: 10,000); authentication endpoints remain limited to 100 attempts per 15 minutes |
 | `VITE_API_BASE_URL` | Frontend's backend API base (client/.env) |
 
 ---
@@ -254,6 +264,7 @@ All endpoints are prefixed with `/api/v1`. Highlights:
 
 - `POST /auth/register`, `/auth/login`, `/auth/refresh`, `/auth/logout`
 - `POST /auth/forgot-password`, `/auth/reset-password`, `/auth/change-password`
+- `GET /auth/account-deletion-status`, `DELETE /auth/account` (consumer and opposite party; deletion is allowed only after every linked case is completed)
 - `PATCH /auth/profile`
 - `POST /complaints`, `GET /complaints/mine`, `GET /complaints/:id`
 - `PATCH /complaints/:id/claim`, `/release`, `/verify`, `/defective`, `/reject` (scrutiny clerk)
@@ -369,7 +380,7 @@ Complaints that were mid-way through the old Yes/No loop move to the Registrar's
 **Serving the notice.** When a case is first allotted to a bench, the system serves the notice on the opposite party
 (using the e-mail the consumer entered when filing):
 
-1. A portal account is created for that e-mail (or reused) and a *set your password* link is e-mailed (valid 14 days).
+1. A portal account is created for that e-mail (or reused) and a *set your password* link is e-mailed (valid 14 days). Following the link sets the password and verifies the opposite party's email.
 2. The **30-day reply clock** starts (`replyDueDate`). The notice is recorded on the case timeline.
 
 If the consumer gave no opposite-party e-mail, the timeline says the notice could not be served online so the clerk can serve it by post.
@@ -377,6 +388,9 @@ If the consumer gave no opposite-party e-mail, the timeline says the notice coul
 **What the opposite party can do** (`/party/...`): read the complaint and the consumer's documents (not the consumer's contact
 details), file a written reply with attachments, ask for more time (max **15 days in total**, the judge decides), offer a settlement
 (the consumer accepts or rejects; accepting closes the case as `SETTLED` and cancels hearings), and see the case timeline from the day of service.
+When a settlement is accepted, the opposite-party reply status is updated to **Case settled**. Hearing notice delivery tracking uses email only; SMS delivery is not used.
+
+**Password recovery and account deletion.** Consumers and opposite parties can request a password reset from the login page. The one-time reset link is e-mailed to the account address; using it verifies the address and resets the password. A user can request account deletion from **My Profile** only when all linked cases are complete (`REJECTED`, `DISPOSED`, `CLOSED`, `WITHDRAWN`, or `SETTLED`). The server rechecks eligibility and the current password before closing the account. Login/profile information is removed, active sessions are revoked, and completed case records are retained in redacted form. Accounts with any open, pending, or otherwise incomplete case cannot be deleted.
 
 **Reply deadline.** A background job reminds the party 7 days and 1 day before the deadline. If the deadline passes with no reply
 the case becomes **EX_PARTE_ELIGIBLE**, the judge is notified, and both sides are e-mailed. A late reply can still be filed and is marked *late*.
@@ -406,7 +420,7 @@ CLIENT_URL=http://localhost:5173
 Gmail needs 2-Step Verification and an *App password* (https://myaccount.google.com/apppasswords). Without SMTP settings the app still
 works — e-mails are recorded as SKIPPED instead of sent. After editing `.env`, restart the server and use the *Send test e-mail* button.
 
-**Migrating:** run `npx prisma migrate deploy` (two new migrations: benches, then the opposite-party portal).
+**Migrating:** run `npx prisma migrate deploy` to apply all pending migrations, including the opposite-party portal and settled-reply status updates.
 
 
 

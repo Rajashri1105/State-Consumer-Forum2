@@ -72,6 +72,7 @@ const REPLY_COLORS = {
   AWAITING_REPLY: { bg: '#FFF4E5', fg: tokens.warning, label: 'Awaiting reply' },
   REPLY_FILED: { bg: '#E7F3E8', fg: tokens.success, label: 'Reply filed' },
   EX_PARTE_ELIGIBLE: { bg: '#FBEAEA', fg: tokens.error, label: 'Reply deadline missed' },
+  SETTLED: { bg: '#E7F6EC', fg: tokens.success, label: 'Case settled' },
 };
 
 /** Where the opposite party stands on filing their reply. */

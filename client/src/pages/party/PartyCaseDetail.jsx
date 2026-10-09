@@ -11,6 +11,7 @@ import ComplaintTimeline from '../../components/common/ComplaintTimeline';
 import PartyResponsePanel from '../../components/common/PartyResponsePanel';
 import { StatusChip } from '../../components/common/StatusChips';
 import { fileUrl } from '../../utils/fileUrl';
+import { getComplaintTitle } from '../../utils/complaintTitle';
 
 /** The opposite party's view of a case: what is alleged, what to do, what happens next. */
 export default function PartyCaseDetail() {
@@ -41,7 +42,7 @@ export default function PartyCaseDetail() {
         <DocketTag>{complaint.complaintNumber}</DocketTag>
         <StatusChip status={complaint.status} />
       </Stack>
-      <Typography variant="h5" fontWeight={700} sx={{ mb: 3 }}>{complaint.title}</Typography>
+      <Typography variant="h5" fontWeight={700} sx={{ mb: 3 }}>{getComplaintTitle(complaint)}</Typography>
 
       {nextHearing && (
         <Paper variant="outlined" sx={{ p: 2, mb: 3 }}>

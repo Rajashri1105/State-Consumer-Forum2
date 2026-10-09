@@ -1,7 +1,6 @@
 const { body, query } = require('express-validator');
 
 const createComplaintValidator = [
-  body('title').optional().trim().isLength({ max: 150 }).withMessage('Case title must be under 150 characters'),
   body('categoryId').trim().notEmpty().withMessage('Complaint category is required'),
   body('sellerName').trim().notEmpty().withMessage('Seller name is required'),
   body('oppositePartyName').trim().notEmpty().withMessage('Opposite party name is required'),

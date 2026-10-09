@@ -14,6 +14,7 @@ import Loader from '../../components/common/Loader';
 import DocketTag from '../../components/common/DocketTag';
 import { StatusChip, PriorityChip } from '../../components/common/StatusChips';
 import { tokens } from '../../theme/theme';
+import { getComplaintTitle } from '../../utils/complaintTitle';
 
 const ALL_STATUSES = [
   '', 'SUBMITTED', 'UNDER_VERIFICATION', 'DEFECTIVE', 'REJECTED',
@@ -181,7 +182,7 @@ export default function ClerkComplaintList({ homePrefix = '/clerk' }) {
                     )}
                     {c.bench && !isCourt && <Chip size="small" variant="outlined" label={c.bench.name} />}
                   </Stack>
-                  <Typography variant="body2" sx={{ mt: 0.5 }} noWrap>{c.consumer?.name} · {c.sellerName} vs {c.oppositePartyName}</Typography>
+                  <Typography variant="body2" sx={{ mt: 0.5 }} noWrap>{getComplaintTitle(c)}</Typography>
                   <Typography variant="caption" color="text.secondary">
                     Filed {dayjs(c.submittedAt).format('DD MMM YYYY')} · {c.category?.name}
                     {c.status === 'UNDER_VERIFICATION' && c.assignedClerk && ` · Claimed by ${c.assignedClerk.id === user?.id ? 'you' : c.assignedClerk.name}`}
