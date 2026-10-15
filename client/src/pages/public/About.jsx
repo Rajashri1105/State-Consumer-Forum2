@@ -14,15 +14,13 @@ export default function About() {
       <Typography variant="overline" color="secondary.dark" fontWeight={700}>About Us</Typography>
       <Typography variant="h3" sx={{ mb: 3 }}>The State Consumer Disputes Redressal Forum</Typography>
       <Typography variant="body1" color="text.secondary" sx={{ mb: 2 }}>
-        The Forum is a quasi-judicial body constituted under the Consumer Protection Act, 2019, to hear
-        and adjudicate disputes between consumers and traders, manufacturers, or service providers.
-        It hears complaints involving deficiency in goods or services, unfair trade practices, and
-        related consumer grievances within its pecuniary jurisdiction.
+        The State Consumer Disputes Redressal Commission is a statutory body constituted under the Consumer Protection Act, 2019.
+        It has pecuniary jurisdiction over original consumer complaints with claim amounts exceeding ₹50,00,000 up to ₹2,00,00,000,
+        as well as appellate jurisdiction over orders passed by District Consumer Commissions.
       </Typography>
       <Typography variant="body1" color="text.secondary" sx={{ mb: 5 }}>
-        This portal digitizes the entire process — from filing a complaint to receiving the final
-        judgment — so that consumers, clerks, and judges can each track a case without relying on
-        physical files or in-person visits.
+        This State Commission portal digitizes the entire process — from filing a new complaint or appeal to receiving court orders
+        and final judgments — ensuring transparent, digitized case management for consumers, appellants, clerks, and judges.
       </Typography>
 
       <Grid container spacing={2} sx={{ mb: 6 }}>

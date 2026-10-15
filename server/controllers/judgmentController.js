@@ -1,101 +1,183 @@
 const path = require('path');
+const fs = require('fs');
+const crypto = require('crypto');
 const prisma = require('../config/db');
+const logger = require('../config/logger');
+const config = require('../config/env');
 const ApiError = require('../utils/ApiError');
 const ApiResponse = require('../utils/ApiResponse');
 const { addTimelineEntry } = require('../services/timelineService');
 const { fireWorkflowNotification } = require('../services/workflowNotifier');
 const { recordAudit } = require('../services/auditService');
 const { resolveOnHearingCompleted } = require('../services/escalationService');
+const { generateFinalJudgmentPdf } = require('../services/pdfService');
+const { assertComplaintAccess, assertBenchClerkOrOversight, isCourtClerk } = require('../services/scopeService');
 
-// --------------------------------------------------------------------------
-// Feature 7: Auto-Publish Judgment
-//
-// POST /judgments/:complaintId  (Judge) — "Finalize Verdict"
-//
-// Replaces the old two-step upload-judgment + publish/notify flow with a
-// single action: the moment the judge fills in verdict, summary, and
-// judgment document and clicks "Finalize Verdict", the system
-// atomically:
-//   1. Creates the Judgment record
-//   2. Sets the complaint status straight to CLOSED (no separate
-//      "publish" step exists any more)
-//   3. Makes the judgment PDF immediately downloadable on the consumer's
-//      dashboard (it already is, via GET /judgments/:complaintId, the
-//      moment the Judgment row + CLOSED status both exist)
-//   4. Fires the existing email notification to the consumer
-//   5. Records an immutable "Verdict Finalized" audit-log timestamp
-// --------------------------------------------------------------------------
-async function finalizeVerdict(req, res) {
+async function submitVerdict(req, res) {
   const { complaintId } = req.params;
   const { summary, verdict } = req.body;
 
-  const complaint = await prisma.complaint.findUnique({ where: { id: complaintId }, include: { judgment: true } });
+  const complaint = await prisma.complaint.findUnique({
+    where: { id: complaintId },
+    include: { judgment: true },
+  });
   if (!complaint) throw ApiError.notFound('Complaint not found');
   if (complaint.status !== 'HEARING_COMPLETED') {
-    throw ApiError.badRequest('At least one hearing must be completed before finalizing the verdict');
+    throw ApiError.badRequest('The verdict can only be submitted after a hearing is completed');
   }
-  if (complaint.judgment) throw ApiError.badRequest('A verdict has already been finalized for this complaint');
-  if (!req.file) throw ApiError.badRequest('Judgment document is required');
-  if (!summary || !verdict) throw ApiError.badRequest('Both a verdict and a summary are required to finalize');
+  if (complaint.judgment) throw ApiError.badRequest('A verdict has already been submitted for this complaint');
 
   const judgeProfile = await prisma.judgeProfile.findUnique({ where: { userId: req.user.id } });
   if (!judgeProfile || complaint.assignedJudgeId !== judgeProfile.id) {
-    throw ApiError.forbidden('Only the assigned judge can finalize the verdict for this complaint');
+    throw ApiError.forbidden('Only the assigned judge can submit the verdict for this complaint');
   }
 
-  const judgment = await prisma.judgment.create({
-    data: {
-      complaintId,
-      judgeId: judgeProfile.id,
-      filePath: path.join('judgments', req.file.filename),
-      summary,
-      verdict,
-    },
+  const { judgment, updatedComplaint } = await prisma.$transaction(async (tx) => {
+    const createdJudgment = await tx.judgment.create({
+      data: { complaintId, judgeId: judgeProfile.id, summary, verdict },
+    });
+    const updated = await tx.complaint.updateMany({
+      where: { id: complaintId, status: 'HEARING_COMPLETED', assignedJudgeId: judgeProfile.id },
+      data: { status: 'JUDGMENT_UPLOADED' },
+    });
+    if (updated.count !== 1) throw ApiError.conflict('The complaint changed while the verdict was being submitted');
+    const changedComplaint = await tx.complaint.findUnique({ where: { id: complaintId } });
+    return { judgment: createdJudgment, updatedComplaint: changedComplaint };
   });
 
-  // Status goes straight to CLOSED — finalizing IS the publish action.
-  const updated = await prisma.complaint.update({
-    where: { id: complaintId },
-    data: { status: 'CLOSED', disposedAt: new Date() },
-  });
-
-  const finalizedAt = new Date();
-
-  await addTimelineEntry(complaintId, 'CLOSED', `Verdict finalized and published: ${verdict}`, req.user.id);
-  await fireWorkflowNotification('JUDGMENT_UPLOADED', { userId: complaint.consumerId, complaintId, complaintNumber: complaint.complaintNumber });
-  await fireWorkflowNotification('CASE_CLOSED', { userId: complaint.consumerId, complaintId, complaintNumber: complaint.complaintNumber });
-
-  // Immutable audit-log timestamp of "Verdict Finalized".
+  await addTimelineEntry(
+    complaintId,
+    'JUDGMENT_UPLOADED',
+    'The judge submitted the verdict and summary. The court clerk will prepare the final judgment document.',
+    req.user.id,
+    { email: false }
+  );
   await recordAudit({
     userId: req.user.id,
-    action: 'VERDICT_FINALIZED',
+    action: 'VERDICT_SUBMITTED',
     entityType: 'Judgment',
     entityId: judgment.id,
-    details: { complaintId, verdict, finalizedAt: finalizedAt.toISOString() },
+    details: { complaintId, verdict },
     ipAddress: req.ip,
   });
 
-  await resolveOnHearingCompleted(complaintId); // Feature 5: clears any escalation flag
-
-  return new ApiResponse(201, { judgment, complaint: updated }, 'Verdict finalized and published to the consumer').send(res);
+  return new ApiResponse(201, { judgment, complaint: updatedComplaint }, 'Verdict submitted for final document preparation').send(res);
 }
 
-// --------------------------------------------------------------------------
-// GET /judgments/:complaintId  — consumer download / anyone with access
-// --------------------------------------------------------------------------
-async function getJudgment(req, res) {
+async function finalizeJudgmentDocument(req, res) {
   const { complaintId } = req.params;
-  const complaint = await prisma.complaint.findUnique({ where: { id: complaintId } });
-  if (!complaint) throw ApiError.notFound('Complaint not found');
+  const { consumerPresent, oppositePartyPresent, witnessDetails, advocateDetails } = req.body;
 
-  if (req.user.role === 'CONSUMER' && complaint.consumerId !== req.user.id) {
-    throw ApiError.forbidden('You do not have access to this judgment');
+  const complaint = await prisma.complaint.findUnique({
+    where: { id: complaintId },
+    include: {
+      judgment: true,
+      consumer: { select: { name: true } },
+      assignedJudge: { include: { user: { select: { name: true } } } },
+      bench: { select: { name: true } },
+    },
+  });
+  if (!complaint) throw ApiError.notFound('Complaint not found');
+  assertBenchClerkOrOversight(complaint, req.user);
+  if (!isCourtClerk(req.user)) throw ApiError.forbidden('Only the court clerk can prepare the final judgment document');
+  if (complaint.status !== 'JUDGMENT_UPLOADED' || !complaint.judgment) {
+    throw ApiError.badRequest('The judge must submit the verdict before the final document can be prepared');
+  }
+  if (complaint.judgment.filePath) throw ApiError.conflict('The final judgment document has already been published');
+
+  const orderDate = new Date();
+  const attendance = { consumerPresent, oppositePartyPresent, witnessDetails, advocateDetails };
+  const pdfBytes = await generateFinalJudgmentPdf(complaint, complaint.judgment, attendance, orderDate);
+  const fileName = `${Date.now()}-${crypto.randomBytes(8).toString('hex')}.pdf`;
+  const filePath = path.join('judgments', fileName);
+  const absoluteFilePath = path.join(__dirname, '..', config.upload.dir, filePath);
+  await fs.promises.mkdir(path.dirname(absoluteFilePath), { recursive: true });
+  await fs.promises.writeFile(absoluteFilePath, pdfBytes);
+
+  let finalized;
+  try {
+    finalized = await prisma.$transaction(async (tx) => {
+      const updatedJudgment = await tx.judgment.update({
+        where: { complaintId },
+        data: {
+          filePath,
+          consumerPresent,
+          oppositePartyPresent,
+          witnessDetails,
+          advocateDetails,
+          orderDate,
+        },
+      });
+      const updated = await tx.complaint.updateMany({
+        where: { id: complaintId, status: 'JUDGMENT_UPLOADED' },
+        data: { status: 'CLOSED', disposedAt: orderDate },
+      });
+      if (updated.count !== 1) throw ApiError.conflict('The complaint changed while the final judgment was being published');
+      const changedComplaint = await tx.complaint.findUnique({ where: { id: complaintId } });
+      return { judgment: updatedJudgment, updatedComplaint: changedComplaint };
+    });
+  } catch (err) {
+    try {
+      await fs.promises.unlink(absoluteFilePath);
+    } catch (cleanupError) {
+      if (cleanupError.code !== 'ENOENT') logger.error(`Could not remove unpublished judgment PDF: ${cleanupError.message}`);
+    }
+    throw err;
   }
 
-  const judgment = await prisma.judgment.findUnique({ where: { complaintId }, include: { judge: { include: { user: { select: { name: true } } } } } });
-  if (!judgment) throw ApiError.notFound('Judgment not yet uploaded for this complaint');
+  const { judgment, updatedComplaint } = finalized;
+  await addTimelineEntry(
+    complaintId,
+    'FINAL_JUDGMENT_PUBLISHED',
+    [
+      `${judgment.verdict}. ${judgment.summary}`,
+      `Bench: ${complaint.bench?.name || '—'} | Case type: ${complaint.caseType === 'APPEAL' ? 'Appeal' : 'New Complaint'} | Filed: ${complaint.submittedAt.toISOString().slice(0, 10)} | Ordered: ${orderDate.toISOString().slice(0, 10)}`,
+      `Consumer: ${complaint.consumer?.name || '—'} (${consumerPresent ? 'Present' : 'Absent'}); Opposite party: ${complaint.oppositePartyName} (${oppositePartyPresent ? 'Present' : 'Absent'})`,
+      `Witness(es): ${witnessDetails}; Advocate(s): ${advocateDetails}; Judge: ${complaint.assignedJudge?.user?.name || '—'}`,
+    ].join('\n'),
+    req.user.id
+  );
+  await fireWorkflowNotification('JUDGMENT_UPLOADED', {
+    userId: complaint.consumerId,
+    complaintId,
+    complaintNumber: complaint.complaintNumber,
+  });
+  await fireWorkflowNotification('CASE_CLOSED', {
+    userId: complaint.consumerId,
+    complaintId,
+    complaintNumber: complaint.complaintNumber,
+  });
+  await recordAudit({
+    userId: req.user.id,
+    action: 'FINAL_JUDGMENT_PUBLISHED',
+    entityType: 'Judgment',
+    entityId: judgment.id,
+    details: { complaintId, filePath, orderDate: orderDate.toISOString() },
+    ipAddress: req.ip,
+  });
+  await resolveOnHearingCompleted(complaintId);
+
+  return new ApiResponse(200, { judgment, complaint: updatedComplaint }, 'Final judgment document published').send(res);
+}
+
+async function getJudgment(req, res) {
+  const { complaintId } = req.params;
+  const complaint = await prisma.complaint.findUnique({
+    where: { id: complaintId },
+    include: { assignedJudge: { include: { user: { select: { id: true } } } } },
+  });
+  if (!complaint) throw ApiError.notFound('Complaint not found');
+  assertComplaintAccess(complaint, req.user);
+
+  const judgment = await prisma.judgment.findUnique({
+    where: { complaintId },
+    include: { judge: { include: { user: { select: { name: true } } } } },
+  });
+  if (!judgment || (!judgment.filePath && ['CONSUMER', 'OPPOSITE_PARTY'].includes(req.user.role))) {
+    throw ApiError.notFound('Final judgment document is not yet available');
+  }
 
   return new ApiResponse(200, { judgment }).send(res);
 }
 
-module.exports = { finalizeVerdict, getJudgment };
+module.exports = { submitVerdict, finalizeJudgmentDocument, getJudgment };

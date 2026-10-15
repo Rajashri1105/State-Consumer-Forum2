@@ -38,7 +38,8 @@ async function complaintScope(user) {
     }
     case 'CLERK':
       if (isCourtClerk(user)) return user.benchId ? { benchId: user.benchId } : NOTHING;
-      return { OR: [{ status: 'SUBMITTED', assignedClerkId: null }, { assignedClerkId: user.id }] };
+      // Scrutiny clerk: the shared intake queue + complaints they claimed + complaints they already processed
+      return { OR: [{ status: 'SUBMITTED', assignedClerkId: null }, { assignedClerkId: user.id }, { verifiedById: user.id }] };
     case 'OPPOSITE_PARTY':
       // Only cases where a notice has actually been served on them.
       return { oppositePartyUserId: user.id, noticeIssuedAt: { not: null } };
@@ -57,7 +58,12 @@ function assertComplaintAccess(complaint, user) {
   if (user.role === 'OPPOSITE_PARTY' && complaint.oppositePartyUserId === user.id && complaint.noticeIssuedAt) return;
   if (user.role === 'JUDGE' && complaint.assignedJudge?.user?.id === user.id) return;
   if (isCourtClerk(user) && user.benchId && complaint.benchId === user.benchId) return;
-  if (isScrutiny(user) && (complaint.assignedClerkId === user.id || (complaint.status === 'SUBMITTED' && !complaint.assignedClerkId))) return;
+  // Scrutiny clerks: allow access to the shared queue, complaints they claimed, and complaints they processed
+  if (isScrutiny(user) && (
+    complaint.assignedClerkId === user.id ||
+    complaint.verifiedById === user.id ||
+    (complaint.status === 'SUBMITTED' && !complaint.assignedClerkId)
+  )) return;
   throw ApiError.forbidden('You do not have access to this complaint');
 }
 

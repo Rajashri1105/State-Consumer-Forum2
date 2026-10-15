@@ -12,7 +12,8 @@ const { notifyUser } = require('../services/notificationService');
 const { recordAudit } = require('../services/auditService');
 const { generateComplaintReceipt, generateSynopsisPdf } = require('../services/pdfService');
 const { getComplaintTitle } = require('../utils/complaintTitle');
-const { determineJurisdiction } = require('../services/jurisdictionEngine');
+const { validateAndDetermineJurisdiction, determineJurisdiction } = require('../services/jurisdictionEngine');
+const { computeCourtFee } = require('../services/courtFeeService');
 const { generateSynopsis } = require('../services/synopsisService');
 const { checkCompleteness } = require('../services/completenessChecker');
 const allotment = require('../services/allotmentService');
@@ -45,18 +46,25 @@ function paginationParams(query) {
 // --------------------------------------------------------------------------
 // POST /complaints  (Consumer)
 // --------------------------------------------------------------------------
-const COURT_FEE_RATE = 0.05; // 5% of the claim amount, per forum policy
-
 async function createComplaint(req, res) {
   const {
+    caseType = 'NEW_COMPLAINT',
     categoryId, sellerName, oppositePartyName, oppositePartyAddress, oppositePartyEmail, oppositePartyPhone,
     product, service, purchaseDate, invoiceNumber, complaintAmount,
     description, overrideDuplicateWarning, additionalOppositeParties,
     synopsisText, synopsisManualConfirm,
+    districtCaseNumber, districtCommissionName, districtOrderDate, appealGrounds,
   } = req.body;
 
   const category = await prisma.complaintCategory.findUnique({ where: { id: categoryId } });
   if (!category) throw ApiError.badRequest('Invalid complaint category');
+
+  // --- Validate Jurisdiction engine rule ---
+  const jur = validateAndDetermineJurisdiction(caseType, complaintAmount);
+  if (!jur.valid) {
+    throw ApiError.badRequest(jur.message);
+  }
+  const jurisdictionLevel = jur.level;
 
   // --- Novelty #4: Duplicate Complaint Detection ---
   const duplicates = await findPossibleDuplicates({
@@ -75,28 +83,29 @@ async function createComplaint(req, res) {
   // --- Novelty #2: Smart Complaint Priority Engine ---
   const priorityResult = await computePriority({ description, product, service, category });
 
-  // --- Auto-computed statutory court fee: 5% of the claim amount ---
-  const courtFee = Math.round(Number(complaintAmount) * COURT_FEE_RATE * 100) / 100;
-
-  // --- Feature 1: Jurisdiction Determination Engine ---
-  // Fires on the same event as the court-fee calculation above.
-  const { level: jurisdictionLevel } = determineJurisdiction(complaintAmount);
+  // --- Auto-computed statutory court fee ---
+  const courtFee = computeCourtFee(caseType, complaintAmount);
 
   const complaintNumber = await generateComplaintNumber();
 
-  // Additional opposite parties beyond the primary one, if the consumer
-  // named more than one respondent.
+  // Additional opposite parties beyond the primary one
   const extraParties = Array.isArray(additionalOppositeParties)
     ? additionalOppositeParties.filter((p) => p && p.name && p.name.trim())
     : [];
 
+  const effectiveSellerName = (caseType === 'APPEAL' && (!sellerName || !sellerName.trim()))
+    ? oppositePartyName
+    : sellerName;
+
   const complaint = await prisma.complaint.create({
     data: {
       complaintNumber,
+      caseType,
       title: getComplaintTitle({ consumer: { name: req.user.name }, oppositePartyName }),
+      consumerName: req.user.name,
       consumerId: req.user.id,
       categoryId,
-      sellerName,
+      sellerName: effectiveSellerName,
       oppositePartyName,
       oppositePartyAddress,
       oppositePartyEmail: oppositePartyEmail ? oppositePartyEmail.trim().toLowerCase() : null,
@@ -108,6 +117,10 @@ async function createComplaint(req, res) {
       complaintAmount,
       courtFee,
       description,
+      districtCaseNumber: caseType === 'APPEAL' ? districtCaseNumber?.trim() : null,
+      districtCommissionName: caseType === 'APPEAL' ? districtCommissionName?.trim() : null,
+      districtOrderDate: (caseType === 'APPEAL' && districtOrderDate) ? new Date(districtOrderDate) : null,
+      appealGrounds: caseType === 'APPEAL' ? appealGrounds?.trim() : null,
       jurisdictionLevel,
       synopsisText: synopsisText?.trim() || null,
       synopsisGeneratedAt: synopsisText?.trim() ? new Date() : null,
@@ -122,10 +135,18 @@ async function createComplaint(req, res) {
     include: COMPLAINT_INCLUDE,
   });
 
-  await addTimelineEntry(complaint.id, 'SUBMITTED', `Priority auto-assigned as ${priorityResult.priority}. ${priorityResult.reason} Court fee (5% of claim): ₹${courtFee}. Jurisdiction: ${jurisdictionLevel.replace(/_/g, ' ')}.`, req.user.id);
+  const feeMsg = caseType === 'APPEAL' ? 'No court fee for appeals' : `Court fee: ₹${courtFee}`;
+  const timelineText = [
+    `Consumer: ${req.user.name} | Opposite party: ${oppositePartyName}.`,
+    caseType === 'APPEAL'
+      ? `Appeal against District Commission order ${districtCaseNumber || ''}. ${feeMsg}. Jurisdiction: STATE COMMISSION.`
+      : `Priority auto-assigned as ${priorityResult.priority}. ${priorityResult.reason} ${feeMsg}. Jurisdiction: STATE COMMISSION.`,
+  ].join(' ');
+
+  await addTimelineEntry(complaint.id, 'SUBMITTED', timelineText, req.user.id);
   await recordAudit({ userId: req.user.id, action: 'COMPLAINT_SUBMITTED', entityType: 'Complaint', entityId: complaint.id, ipAddress: req.ip });
 
-  // Shared intake queue: let every active scrutiny clerk know; the first to claim it wins.
+  // Shared intake queue: let every active scrutiny clerk know
   const scrutinyClerks = await prisma.user.findMany({
     where: { role: 'CLERK', clerkType: 'SCRUTINY', isActive: true },
     select: { id: true },
@@ -244,8 +265,8 @@ async function uploadEvidence(req, res) {
   const complaint = await prisma.complaint.findUnique({ where: { id } });
   if (!complaint) throw ApiError.notFound('Complaint not found');
   if (complaint.consumerId !== req.user.id) throw ApiError.forbidden('You can only upload evidence to your own complaint');
-  if (['REJECTED', 'CLOSED', 'DISPOSED'].includes(complaint.status)) {
-    throw ApiError.badRequest('Cannot add evidence to a closed complaint');
+  if (['CLOSED', 'DISPOSED'].includes(complaint.status)) {
+    throw ApiError.badRequest('Cannot add evidence to a closed or disposed complaint');
   }
 
   const files = req.files || [];
@@ -295,15 +316,19 @@ async function getMyComplaints(req, res) {
 // GET /complaints  (Clerk, Judge, Admin)
 // --------------------------------------------------------------------------
 async function listComplaints(req, res) {
-  const { status, priority, categoryId, search, myQueue, isDelayed, benchId } = req.query;
+  const { status, priority, categoryId, search, myQueue, isDelayed, benchId, caseType } = req.query;
   const { page, limit, skip } = paginationParams(req.query);
 
-  // Feature 5: "can run on page load or a scheduled job" — fire-and-forget
-  // so the clerk/admin queue view always reflects current escalation
-  // flags without blocking this request on the full sweep.
-  runEscalationSweep().catch((err) => require('../config/logger').error('Escalation sweep (on page load) failed:', err.message));
+  // Feature 5: Fire the escalation sweep only for admin/registrar dashboards
+  // (where overdue flags are surfaced), NOT for every scrutiny clerk page load.
+  // Scrutiny clerks only see SUBMITTED/UNDER_VERIFICATION complaints which
+  // can never be flagged, so running a full DB sweep per request is wasted work.
+  if (['ADMIN', 'REGISTRAR'].includes(req.user.role)) {
+    runEscalationSweep().catch((err) => require('../config/logger').error('Escalation sweep (on page load) failed:', err.message));
+  }
 
   const filters = {
+    ...(caseType ? { caseType } : {}),
     ...(status ? { status } : {}),
     ...(priority ? { priority } : {}),
     ...(categoryId ? { categoryId } : {}),
@@ -318,14 +343,17 @@ async function listComplaints(req, res) {
     } : {}),
   };
 
-  // Scrutiny clerk "My claimed" tab.
-  if (isScrutiny(req.user) && (myQueue === 'true' || myQueue === true)) {
-    filters.assignedClerkId = req.user.id;
-  }
+  const where = {
+    AND: [
+      filters,
+      await complaintScope(req.user),
+      ...(isScrutiny(req.user) && (myQueue === 'true' || myQueue === true)
+        ? [{ OR: [{ assignedClerkId: req.user.id }, { verifiedById: req.user.id }] }]
+        : []),
+    ],
+  };
 
   // Role/bench scoping lives in ONE place (scopeService) — never filter by hand here.
-  const where = { AND: [filters, await complaintScope(req.user)] };
-
   // Intake queue is worked oldest-first; everything else newest-first.
   const intake = status === 'SUBMITTED';
   const orderBy = intake
@@ -345,26 +373,49 @@ async function listComplaints(req, res) {
 // --------------------------------------------------------------------------
 async function getComplaintById(req, res) {
   const { id } = req.params;
-  const complaint = await prisma.complaint.findUnique({ where: { id }, include: COMPLAINT_INCLUDE });
+
+  // Run the main complaint fetch and timeline in parallel — two independent queries.
+  const [complaint, timeline] = await Promise.all([
+    prisma.complaint.findUnique({ where: { id }, include: COMPLAINT_INCLUDE }),
+    getTimeline(id),
+  ]);
   if (!complaint) throw ApiError.notFound('Complaint not found');
 
   assertComplaintAccess(complaint, req.user);
 
-  let timeline = await getTimeline(id);
+  let resolvedTimeline = timeline.map((entry) => (
+    entry.stage === 'Final Judgment Published' && complaint.judgment?.filePath
+      ? { ...entry, documentPath: complaint.judgment.filePath }
+      : entry
+  ));
+  const publicComplaint = ['CONSUMER', 'OPPOSITE_PARTY'].includes(req.user.role)
+    && !complaint.judgment?.filePath
+    ? { ...complaint, judgment: null }
+    : complaint;
 
   // The opposite party sees the case from the day the notice was served on them —
   // not the consumer's contact details nor the forum's internal handling notes.
   if (req.user.role === 'OPPOSITE_PARTY') {
     const since = complaint.noticeIssuedAt;
-    timeline = timeline.filter((t) => since && t.createdAt >= since).map((t) => ({ ...t, actor: t.actor ? { name: t.actor.name, role: t.actor.role } : null }));
-    const { assignedClerk, verifiedBy, allottedBy, allotments, feedback, possibleDuplicateOfId, ...visible } = complaint;
+    resolvedTimeline = resolvedTimeline.filter((t) => since && t.createdAt >= since).map((t) => ({ ...t, actor: t.actor ? { name: t.actor.name, role: t.actor.role } : null }));
+    const { assignedClerk, verifiedBy, allottedBy, allotments, feedback, possibleDuplicateOfId, ...visible } = publicComplaint;
     return new ApiResponse(200, {
-      complaint: { ...visible, consumer: { name: complaint.consumer?.name }, courtFee: undefined },
-      timeline,
+      complaint: {
+        ...visible,
+        consumer: { name: complaint.consumerName || complaint.consumer?.name },
+        courtFee: undefined,
+      },
+      timeline: resolvedTimeline,
     }).send(res);
   }
 
-  return new ApiResponse(200, { complaint, timeline }).send(res);
+  const complaintWithHistoricalConsumer = {
+    ...publicComplaint,
+    consumer: publicComplaint.consumer
+      ? { ...publicComplaint.consumer, name: publicComplaint.consumerName || publicComplaint.consumer.name }
+      : publicComplaint.consumer,
+  };
+  return new ApiResponse(200, { complaint: complaintWithHistoricalConsumer, timeline: resolvedTimeline }).send(res);
 }
 
 // --------------------------------------------------------------------------
@@ -410,11 +461,13 @@ async function verifyAndAccept(req, res) {
 
   // --- Feature 3: Document Completeness Checker (server-side enforcement) ---
   const completeness = checkCompleteness({
+    caseType: complaint.caseType,
     complaintAmount: complaint.complaintAmount,
     oppositePartyName: complaint.oppositePartyName,
     evidenceCount: complaint.evidence.length,
     synopsisText: complaint.synopsisText,
     synopsisManualConfirm: complaint.synopsisManualConfirm,
+    evidenceTypes: complaint.evidence.map((e) => e.type),
   });
   if (!completeness.isComplete) {
     throw ApiError.badRequest(`This complaint cannot be accepted yet — missing: ${completeness.missing.join('; ')}. You can mark it as defective so the consumer can fix it.`);
@@ -474,7 +527,7 @@ async function markDefective(req, res) {
 
   const updated = await prisma.complaint.update({
     where: { id },
-    data: { status: 'DEFECTIVE', defectRemarks: remarks.trim() },
+    data: { status: 'DEFECTIVE', defectRemarks: remarks.trim(), verifiedById: req.user.id, verifiedAt: new Date() },
     include: COMPLAINT_INCLUDE,
   });
 
@@ -518,6 +571,55 @@ async function resubmitComplaint(req, res) {
   })));
 
   return new ApiResponse(200, { complaint: updated }, 'Complaint resubmitted for scrutiny').send(res);
+}
+
+// --------------------------------------------------------------------------
+// PATCH /complaints/:id/reappeal  (Consumer) — after rectifying the reason
+// for rejection, the consumer can re-appeal: the complaint re-enters the
+// shared intake queue for fresh scrutiny review.
+// --------------------------------------------------------------------------
+async function reappealComplaint(req, res) {
+  const { id } = req.params;
+  const complaint = await prisma.complaint.findUnique({ where: { id } });
+  if (!complaint) throw ApiError.notFound('Complaint not found');
+  if (complaint.consumerId !== req.user.id) throw ApiError.forbidden('You can only re-appeal your own complaint');
+  if (complaint.status !== 'REJECTED') throw ApiError.badRequest('Only a complaint that was rejected can be re-appealed');
+
+  // Enforce max 1 re-appeal: if already re-appealed once and rejected again, the consumer must file a new complaint.
+  if (complaint.reappealCount >= 1) {
+    throw ApiError.conflict(
+      'You have already used your one permitted re-appeal for this complaint. ' +
+      'The second rejection is final — please file a new complaint if you wish to pursue the matter further.'
+    );
+  }
+
+  const updated = await prisma.complaint.update({
+    where: { id },
+    data: {
+      status: 'SUBMITTED',
+      assignedClerkId: null,
+      verifiedById: null,
+      verifiedAt: null,
+      rejectionReason: null,
+      reappealCount: { increment: 1 }, // atomically track that one re-appeal has been used
+    },
+    include: COMPLAINT_INCLUDE,
+  });
+
+  await addTimelineEntry(id, 'SUBMITTED', 'Re-appealed by the consumer after rectifying the rejection reason. Returned to the intake queue for fresh scrutiny (1 re-appeal used).', req.user.id);
+  await recordAudit({ userId: req.user.id, action: 'COMPLAINT_REAPPEALED', entityType: 'Complaint', entityId: id, ipAddress: req.ip });
+
+  // Notify all active scrutiny clerks
+  const scrutinyClerks = await prisma.user.findMany({ where: { role: 'CLERK', clerkType: 'SCRUTINY', isActive: true }, select: { id: true } });
+  await Promise.all(scrutinyClerks.map((c) => notifyUser({
+    userId: c.id,
+    title: 'Complaint Re-appealed (1 of 1 attempt)',
+    message: `Complaint ${complaint.complaintNumber} was rejected and the consumer has used their one permitted re-appeal. It is back in the intake queue for final review.`,
+    type: 'COMPLAINT_SUBMITTED',
+    relatedComplaintId: id,
+  })));
+
+  return new ApiResponse(200, { complaint: updated }, 'Complaint re-appealed — it is back in the scrutiny intake queue').send(res);
 }
 
 // --------------------------------------------------------------------------
@@ -619,7 +721,7 @@ async function downloadReceipt(req, res) {
 // --------------------------------------------------------------------------
 // POST /complaints/:id/feedback  (Consumer — owner only, post-judgment)
 // --------------------------------------------------------------------------
-const FEEDBACK_ELIGIBLE_STATUSES = ['JUDGMENT_UPLOADED', 'DISPOSED', 'CLOSED'];
+const FEEDBACK_ELIGIBLE_STATUSES = ['DISPOSED', 'CLOSED'];
 
 async function submitFeedback(req, res) {
   const { id } = req.params;
@@ -630,12 +732,12 @@ async function submitFeedback(req, res) {
     throw ApiError.badRequest('Rating must be a whole number between 1 and 5');
   }
 
-  const complaint = await prisma.complaint.findUnique({ where: { id }, include: { feedback: true } });
+  const complaint = await prisma.complaint.findUnique({ where: { id }, include: { feedback: true, judgment: true } });
   if (!complaint) throw ApiError.notFound('Complaint not found');
   if (complaint.consumerId !== req.user.id) throw ApiError.forbidden('You can only leave feedback on your own complaint');
 
-  if (!FEEDBACK_ELIGIBLE_STATUSES.includes(complaint.status)) {
-    throw ApiError.badRequest('Feedback can only be submitted after a judgment has been uploaded');
+  if (!FEEDBACK_ELIGIBLE_STATUSES.includes(complaint.status) || !complaint.judgment?.filePath) {
+    throw ApiError.badRequest('Feedback can only be submitted after the final judgment document has been published');
   }
   if (complaint.feedback) throw ApiError.conflict('Feedback has already been submitted for this complaint');
 
@@ -660,6 +762,7 @@ module.exports = {
   rejectComplaint,
   markDefective,
   resubmitComplaint,
+  reappealComplaint,
   getJudgeRecommendations,
   getAllotmentQueue,
   allotComplaint,

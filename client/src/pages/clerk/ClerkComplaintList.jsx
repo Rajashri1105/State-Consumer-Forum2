@@ -17,17 +17,17 @@ import { tokens } from '../../theme/theme';
 import { getComplaintTitle } from '../../utils/complaintTitle';
 
 const ALL_STATUSES = [
-  '', 'SUBMITTED', 'UNDER_VERIFICATION', 'DEFECTIVE', 'REJECTED',
-  'PENDING_ALLOTMENT', 'NEEDS_MANUAL_ASSIGNMENT', 'JUDGE_ASSIGNED',
-  'HEARING_SCHEDULED', 'HEARING_COMPLETED', 'DISPOSED', 'CLOSED', 'WITHDRAWN', 'SETTLED',
+  '', 'SUBMITTED', 'UNDER_VERIFICATION', 'ACCEPTED', 'DEFECTIVE', 'REJECTED',
+  'PENDING_JUDGE_CONFIRMATION', 'PENDING_ALLOTMENT', 'NEEDS_MANUAL_ASSIGNMENT',
+  'JUDGE_ASSIGNED', 'HEARING_SCHEDULED', 'HEARING_COMPLETED', 'JUDGMENT_UPLOADED',
+  'DISPOSED', 'CLOSED', 'WITHDRAWN', 'SETTLED',
 ];
-const COURT_STATUSES = ['', 'JUDGE_ASSIGNED', 'HEARING_SCHEDULED', 'HEARING_COMPLETED', 'DISPOSED', 'CLOSED'];
 const PRIORITY_OPTIONS = ['', 'HIGH', 'MEDIUM', 'LOW'];
 
 /**
  * One list, three audiences (everything is scoped server-side — see scopeService):
- *   scrutiny clerk -> "Intake queue" (claim) + "My claimed"
- *   court clerk    -> their bench's cases
+ *   scrutiny clerk -> "Intake queue" (claim) + "My cases & history"
+ *   court clerk    -> all cases in their bench's docket
  *   registrar      -> every case, filterable by bench
  */
 export default function ClerkComplaintList({ homePrefix = '/clerk' }) {
@@ -37,12 +37,12 @@ export default function ClerkComplaintList({ homePrefix = '/clerk' }) {
   const isCourt = user?.role === 'CLERK' && user?.clerkType === 'COURT';
   const isScrutiny = user?.role === 'CLERK' && !isCourt;
 
-  const [tab, setTab] = useState(isScrutiny ? 'intake' : 'all'); // scrutiny: intake | mine
+  const [tab, setTab] = useState(isScrutiny ? 'mine' : 'all'); // scrutiny: intake | mine
   const [loading, setLoading] = useState(true);
   const [items, setItems] = useState([]);
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
-  const [status, setStatus] = useState(isCourt ? 'JUDGE_ASSIGNED' : '');
+  const [status, setStatus] = useState('');
   const [priority, setPriority] = useState('');
   const [search, setSearch] = useState('');
   const [benchId, setBenchId] = useState('');
@@ -61,7 +61,10 @@ export default function ClerkComplaintList({ homePrefix = '/clerk' }) {
     };
     if (isScrutiny) {
       if (tab === 'intake') params.status = 'SUBMITTED';
-      else params.myQueue = true;
+      else {
+        params.myQueue = true;
+        params.status = status || undefined;
+      }
     } else {
       params.status = status || undefined;
       if (isRegistrar && benchId) params.benchId = benchId;
@@ -94,9 +97,11 @@ export default function ClerkComplaintList({ homePrefix = '/clerk' }) {
 
   const title = isScrutiny ? 'Intake & Verification' : isCourt ? 'Bench Cases' : 'All Complaints';
   const subtitle = isScrutiny
-    ? 'Claim a complaint from the shared queue, then verify it, mark it defective, or reject it.'
+    ? tab === 'intake'
+      ? 'Claim a complaint from the shared queue, then verify it, mark it defective, or reject it.'
+      : 'All cases you currently handle or previously processed. Select a case to view its full timeline and documents.'
     : isCourt
-      ? 'Complaints allotted to your bench. Schedule hearings and keep the file moving.'
+      ? 'All current and completed complaints allotted to your bench. Select a case to view its full timeline and documents.'
       : 'Every complaint in the forum. Use the bench filter to see one court\'s docket.';
 
   return (
@@ -110,7 +115,7 @@ export default function ClerkComplaintList({ homePrefix = '/clerk' }) {
           onChange={(_, val) => { if (val) { setTab(val); setPage(1); } }}
         >
           <ToggleButton value="intake">Intake queue (unclaimed)</ToggleButton>
-          <ToggleButton value="mine">My claimed &amp; history</ToggleButton>
+          <ToggleButton value="mine">My cases &amp; history</ToggleButton>
         </ToggleButtonGroup>
       )}
 
@@ -123,10 +128,10 @@ export default function ClerkComplaintList({ homePrefix = '/clerk' }) {
               InputProps={{ startAdornment: <InputAdornment position="start"><Search size={16} /></InputAdornment> }}
             />
           </Grid>
-          {!isScrutiny && (
+          {(!isScrutiny || tab === 'mine') && (
             <Grid item xs={6} sm={isRegistrar ? 2.5 : 4}>
               <TextField fullWidth size="small" select label="Status" value={status} onChange={(e) => { setStatus(e.target.value); setPage(1); }}>
-                {(isCourt ? COURT_STATUSES : ALL_STATUSES).map((s) => <MenuItem key={s} value={s}>{s ? s.replace(/_/g, ' ') : 'All Statuses'}</MenuItem>)}
+                {ALL_STATUSES.map((s) => <MenuItem key={s} value={s}>{s ? s.replace(/_/g, ' ') : 'All Statuses'}</MenuItem>)}
               </TextField>
             </Grid>
           )}
@@ -172,6 +177,7 @@ export default function ClerkComplaintList({ homePrefix = '/clerk' }) {
                 <Box sx={{ minWidth: 0, flex: '1 1 280px' }}>
                   <Stack direction="row" alignItems="center" gap={1} flexWrap="wrap">
                     <DocketTag>{c.complaintNumber}</DocketTag>
+                    <Chip size="small" variant="outlined" label={c.caseType === 'APPEAL' ? 'Appeal' : 'New Complaint'} color={c.caseType === 'APPEAL' ? 'secondary' : 'default'} />
                     {c.duplicateOverridden && (
                       <Chip size="small" icon={<AlertTriangle size={13} />} label="Possible duplicate"
                         sx={{ backgroundColor: `${tokens.warning}1A`, color: tokens.warning, fontWeight: 700 }} />

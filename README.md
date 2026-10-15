@@ -1,4 +1,4 @@
-change12# State Consumer Forum Complaint Registration and Intelligent Hearing Management Portal
+change123456# State Consumer Forum Complaint Registration and Intelligent Hearing Management Portal
 
 A full-stack web application that digitizes the complete consumer dispute resolution
 process — from complaint registration to final judgment — for a State Consumer
@@ -49,9 +49,10 @@ withdraw a complaint before a hearing is scheduled, edit profile, change passwor
 clerks can never hold the same one), then accepts it, returns it to the consumer as
 *defective* with remarks, or rejects it. Unattended claims return to the pool automatically.
 
-**Court Clerk:** belongs to one bench. Sees only that bench's cases, schedules/reschedules
-hearings (engine-suggested or manual), auto-generated hearing notices, bench cause list,
-judge availability panel (who's on leave today)
+**Court Clerk:** belongs to one bench. Sees only that bench's cases, schedules the first
+hearing when a case is assigned and reschedules active hearings (engine-suggested or manual).
+Completed hearings proceed to the judge for finalization. Also manages auto-generated hearing
+notices, the bench cause list, and the judge availability panel (who's on leave today).
 
 **Registrar:** allots accepted complaints to benches (automatic least-loaded, or manual
 choice), re-allots cases between benches, approves cross-bench moves when a judge goes on
@@ -67,30 +68,40 @@ for accounts with no history), category & priority-rule configuration, analytics
 dashboard with CSV export, audit logs, holiday calendar, forum settings including
 configurable hearing time slots
 
-## The Five Intelligent Engines
+## The Five Intelligent Engines & Portal Rules
 
-All five are **rule-based**, not machine learning, per the original project brief:
-
-1. **Hearing Scheduling Engine** — walks forward from a priority-weighted lead
+1. **State Commission Jurisdiction & Court Fee Engine** — handles two distinct filing types:
+   - **NEW_COMPLAINT**: Pecuniary jurisdiction between ₹50,00,001 and ₹2,00,00,000 (State Commission).
+     - Claims ≤ ₹50,00,000 are directed to the District Commission.
+     - Claims > ₹2,00,00,000 are directed to the National Commission.
+     - Court Fee: ₹2,000 for claim amounts ≤ ₹1,00,00,000; ₹2,500 for claim amounts > ₹1,00,00,000 up to ₹2,00,00,000.
+   - **APPEAL**: Appeals originating from a District Commission order.
+     - Range checks do not apply (any positive amount in dispute accepted).
+     - Court Fee: ₹0 (No court fee for appeals).
+     - Certified District Order Proof: Uploading a certified copy of the District Commission order is mandatory before scrutiny clerk verification can pass.
+2. **Hearing Scheduling Engine** — walks forward from a priority-weighted lead
    time, skipping holidays, non-working days, unavailable judges, *and judges
    on marked leave*, respecting each judge's max-hearings-per-day and the
    forum's configurable time slots, and returns a suggested date + time with a
    human-readable reasoning trail. The clerk can accept or override it.
-2. **Smart Priority Engine** — matches admin-configurable keyword rules against
+3. **Smart Priority Engine** — matches admin-configurable keyword rules against
    the complaint text; falls back to the category's default priority.
-3. **Judge Workload Balancer** — ranks judges by pending cases, today's hearing
+4. **Judge Workload Balancer** — ranks judges by pending cases, today's hearing
    load, and this week's load, surfaced to the clerk during assignment.
-4. **Duplicate Complaint Detection** — Jaccard word-overlap on descriptions +
+5. **Duplicate Complaint Detection** — Jaccard word-overlap on descriptions +
    name-similarity on the opposite party, flagged to the filer before saving.
-5. **Real-Time Complaint Timeline** — every status transition is written with a
+6. **Real-Time Complaint Timeline** — every status transition is written with a
    timestamp and shown as a visual case history.
 
 ## Additional Notable Features
 
 - **Judge leave/unavailability tracking** — when a judge marks leave, the
   system immediately flags any already-scheduled hearings that fall within
-  that period, so the clerk knows exactly what needs rescheduling instead of
-  finding out when the judge doesn't show up.
+  that period, so the clerk can track hearings waiting for the Registrar to
+  reschedule and see the replacement judge and slot once moved. Replacement
+  slots are limited to the next two forum working days; manually selected hearing dates are
+  checked against judge leave, holidays, working days, and available slots,
+  with alternative dates shown as soon as a date is entered.
 - **Auto-generated PDF documents** — hearing notices are generated automatically
   the moment a hearing is scheduled (and regenerated on reschedule); consumers
   can download a PDF acknowledgment receipt for any complaint at any time.

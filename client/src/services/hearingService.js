@@ -2,6 +2,7 @@ import api from './api';
 
 export const hearingService = {
   getSuggestion: (complaintId) => api.get('/hearings/suggest', { params: { complaintId } }),
+  getDateAvailability: (params) => api.get('/hearings/availability', { params }),
   schedule: (payload) => api.post('/hearings', payload),
   reschedule: (id, payload) => api.patch(`/hearings/${id}/reschedule`, payload),
   adjourn: (id, adjournReason) => api.patch(`/hearings/${id}/adjourn`, { adjournReason }),

@@ -1,8 +1,10 @@
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000/api/v1';
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api/v1';
 
-// The API base includes /api/v1; uploaded files are served from the
-// server's origin directly under /uploads, so strip the API suffix.
-const SERVER_ORIGIN = API_BASE_URL.replace(/\/api\/v1\/?$/, '');
+// Relative API configuration means uploads share the frontend's origin and
+// are forwarded to the backend by the development/production proxy.
+const SERVER_ORIGIN = API_BASE_URL.startsWith('/')
+  ? ''
+  : API_BASE_URL.replace(/\/api\/v1\/?$/, '');
 
 export function fileUrl(relativePath) {
   if (!relativePath) return null;

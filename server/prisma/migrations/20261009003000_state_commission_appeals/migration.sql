@@ -1,0 +1,12 @@
+-- CreateEnum
+CREATE TYPE "CaseType" AS ENUM ('NEW_COMPLAINT', 'APPEAL');
+
+-- AlterEnum
+ALTER TYPE "EvidenceType" ADD VALUE IF NOT EXISTS 'DISTRICT_ORDER';
+
+-- AlterTable
+ALTER TABLE "complaints" ADD COLUMN IF NOT EXISTS "caseType" "CaseType" NOT NULL DEFAULT 'NEW_COMPLAINT',
+ADD COLUMN IF NOT EXISTS "districtCaseNumber" TEXT,
+ADD COLUMN IF NOT EXISTS "districtCommissionName" TEXT,
+ADD COLUMN IF NOT EXISTS "districtOrderDate" TIMESTAMP(3),
+ADD COLUMN IF NOT EXISTS "appealGrounds" TEXT;

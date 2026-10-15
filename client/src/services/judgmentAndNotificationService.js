@@ -1,7 +1,8 @@
 import api from './api';
 
 export const judgmentService = {
-  finalizeVerdict: (complaintId, formData) => api.post(`/judgments/${complaintId}`, formData, { headers: { 'Content-Type': 'multipart/form-data' } }),
+  submitVerdict: (complaintId, payload) => api.post(`/judgments/${complaintId}/verdict`, payload),
+  finalizeDocument: (complaintId, payload) => api.post(`/judgments/${complaintId}/final-document`, payload),
   get: (complaintId) => api.get(`/judgments/${complaintId}`),
 };
 

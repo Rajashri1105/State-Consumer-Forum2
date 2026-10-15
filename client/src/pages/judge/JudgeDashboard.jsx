@@ -90,8 +90,8 @@ export default function JudgeDashboard() {
                     </Box>
                     <Stack direction="row" gap={1} alignItems="center">
                       <PriorityChip priority={c.priority} />
-                      <Button size="small" component={RouterLink} to="/judge/cases" startIcon={<FileSignature size={16} />}>
-                        Upload Judgment
+                      <Button size="small" component={RouterLink} to={`/judge/cases/${c.id}`} startIcon={<FileSignature size={16} />}>
+                        Submit Verdict
                       </Button>
                     </Stack>
                   </Box>

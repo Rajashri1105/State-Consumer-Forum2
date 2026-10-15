@@ -15,6 +15,7 @@ router.use(authenticate);
 
 router.get('/calendar', hearingController.getCalendar);
 router.get('/suggest', authorize('CLERK', 'REGISTRAR', 'ADMIN'), hearingController.getSuggestedDate);
+router.get('/availability', authorize('CLERK', 'REGISTRAR', 'ADMIN'), hearingController.getDateAvailability);
 router.post('/', authorize('CLERK', 'REGISTRAR', 'ADMIN'), scheduleHearingValidator, validate, hearingController.scheduleHearing);
 router.patch('/:id/reschedule', authorize('CLERK', 'REGISTRAR', 'ADMIN'), rescheduleHearingValidator, validate, hearingController.rescheduleHearing);
 router.patch('/:id/adjourn', authorize('JUDGE'), adjournHearingValidator, validate, hearingController.adjournHearing);

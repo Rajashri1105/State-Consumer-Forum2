@@ -44,8 +44,13 @@ export const changePasswordSchema = yup.object({
 });
 
 export const complaintSchema = yup.object({
+  caseType: yup.string().oneOf(['NEW_COMPLAINT', 'APPEAL']).default('NEW_COMPLAINT'),
   categoryId: yup.string().required('Select a complaint category'),
-  sellerName: yup.string().trim().required('Seller / trader name is required'),
+  sellerName: yup.string().trim().when('caseType', {
+    is: 'APPEAL',
+    then: (schema) => schema.notRequired(),
+    otherwise: (schema) => schema.required('Seller / trader name is required'),
+  }),
   oppositePartyName: yup.string().trim().required('Opposite party name is required'),
   oppositePartyAddress: yup.string().trim(),
   oppositePartyEmail: yup.string().trim().email('Enter a valid e-mail address'),
@@ -57,11 +62,46 @@ export const complaintSchema = yup.object({
   complaintAmount: yup
     .number()
     .typeError('Enter a valid amount')
-    .positive('Amount must be greater than zero')
-    .required('Complaint amount is required'),
+    .required('Claim / dispute amount is required')
+    .when('caseType', {
+      is: 'APPEAL',
+      then: (schema) => schema.positive('Amount in dispute must be greater than zero'),
+      otherwise: (schema) => schema
+        .moreThan(5000000, 'Claims up to ₹50,00,000 are filed with the District Commission, not the State Commission.')
+        .max(20000000, 'Claims above ₹2,00,00,000 are filed with the National Commission.'),
+    }),
   description: yup
     .string()
     .trim()
     .min(20, 'Please provide at least 20 characters describing your complaint')
     .required('Description is required'),
+  
+  // Appeal fields
+  districtCaseNumber: yup.string().trim().when('caseType', {
+    is: 'APPEAL',
+    then: (schema) => schema.required('District case number is required'),
+    otherwise: (schema) => schema.notRequired(),
+  }),
+  districtCommissionName: yup.string().trim().when('caseType', {
+    is: 'APPEAL',
+    then: (schema) => schema.required('District Commission name is required'),
+    otherwise: (schema) => schema.notRequired(),
+  }),
+  districtOrderDate: yup.string().when('caseType', {
+    is: 'APPEAL',
+    then: (schema) => schema
+      .required('District order date is required')
+      .test('not-in-future', 'District order date cannot be in the future', (val) => {
+        if (!val) return false;
+        return new Date(val) <= new Date();
+      }),
+    otherwise: (schema) => schema.notRequired(),
+  }),
+  appealGrounds: yup.string().trim().when('caseType', {
+    is: 'APPEAL',
+    then: (schema) => schema
+      .min(50, 'Grounds of appeal must be at least 50 characters')
+      .required('Grounds of appeal are required'),
+    otherwise: (schema) => schema.notRequired(),
+  }),
 });

@@ -12,9 +12,14 @@ const { recordAudit } = require('../services/auditService');
 const { generateHearingNotice } = require('../services/pdfService');
 const logger = require('../config/logger');
 const { isCourtClerk } = require('../services/scopeService');
+const { getHearingDateAvailability, getWorkingDayWindow } = require('../services/schedulingEngine');
 
 const REQUEST_INCLUDE = {
-  hearing: true,
+  hearing: {
+    include: {
+      judge: { include: { user: { select: { name: true } } } },
+    },
+  },
   complaint: {
     include: {
       consumer: { select: { id: true, name: true, email: true } },
@@ -24,19 +29,40 @@ const REQUEST_INCLUDE = {
 };
 
 // --------------------------------------------------------------------------
-// GET /reassignments  (Clerk, Admin)
+// GET /reassignments  (Clerk, Registrar, Admin)
 // --------------------------------------------------------------------------
 async function listReassignments(req, res) {
   const { status = 'PENDING' } = req.query;
 
-  // Court clerks only see requests for their own bench; Registrar/Admin see all.
+  // Clerks can follow leave cases from their bench, including after the Registrar
+  // moves a case to another bench.
   let scope = {};
   if (req.user.role === 'CLERK') {
-    scope = isCourtClerk(req.user) && req.user.benchId ? { complaint: { benchId: req.user.benchId } } : { id: { in: [] } };
+    if (!isCourtClerk(req.user) || !req.user.benchId) {
+      scope = { id: { in: [] } };
+    } else {
+      const benchJudges = await prisma.judgeProfile.findMany({
+        where: { benchId: req.user.benchId },
+        select: { id: true },
+      });
+      scope = {
+        OR: [
+          { complaint: { benchId: req.user.benchId } },
+          { originalJudgeId: { in: benchJudges.map((judge) => judge.id) } },
+        ],
+      };
+    }
   }
 
   const requests = await prisma.reassignmentRequest.findMany({
-    where: { ...(status === 'ALL' ? {} : { status }), ...scope },
+    where: {
+      ...(status === 'ALL'
+        ? {}
+        : status === 'ACTIVE'
+          ? { status: { in: ['PENDING', 'APPROVED'] } }
+          : { status }),
+      ...scope,
+    },
     include: REQUEST_INCLUDE,
     orderBy: { createdAt: 'desc' },
   });
@@ -59,7 +85,7 @@ async function listReassignments(req, res) {
 }
 
 // --------------------------------------------------------------------------
-// PATCH /reassignments/:id/approve  (Clerk, Admin)
+// PATCH /reassignments/:id/approve  (Registrar)
 // --------------------------------------------------------------------------
 async function approveReassignment(req, res) {
   const { id } = req.params;
@@ -80,15 +106,20 @@ async function approveReassignment(req, res) {
   const newJudge = await prisma.judgeProfile.findUnique({ where: { id: finalJudgeId }, include: { user: true, bench: true } });
   if (!newJudge) throw ApiError.badRequest('Selected replacement judge does not exist');
 
-  // A court clerk may only approve replacements inside their own bench;
-  // moving a case to a different bench is the Registrar's decision.
-  const movesBench = newJudge.benchId !== request.complaint.benchId;
-  if (req.user.role === 'CLERK') {
-    if (!isCourtClerk(req.user) || req.user.benchId !== request.complaint.benchId) {
-      throw ApiError.forbidden('This request belongs to another bench');
-    }
-    if (movesBench) throw ApiError.forbidden('Moving a case to a different bench needs the Registrar');
+  const { firstDate, deadline } = await getWorkingDayWindow(request.createdAt, 2);
+  const selectedDate = dayjs(finalDate).startOf('day');
+  if (selectedDate.isBefore(dayjs(firstDate).startOf('day')) || selectedDate.isAfter(dayjs(deadline).startOf('day'))) {
+    throw ApiError.badRequest('Judge-leave hearings must be rescheduled to a future date within two working days of the leave being recorded.');
   }
+  const availability = await getHearingDateAvailability({
+    judgeId: finalJudgeId,
+    date: finalDate,
+    scheduledTime: finalTime,
+    excludeHearingId: request.hearingId,
+  });
+  if (!availability.available) throw ApiError.badRequest(`${availability.reason} Choose another date.`);
+
+  const movesBench = newJudge.benchId !== request.complaint.benchId;
 
   const updatedHearing = await prisma.hearing.update({
     where: { id: request.hearingId },
@@ -96,7 +127,7 @@ async function approveReassignment(req, res) {
       judgeId: finalJudgeId,
       scheduledDate: new Date(finalDate),
       scheduledTime: finalTime,
-      isSystemSuggested: !judgeId, // true if the clerk accepted the system's recommendation untouched
+      isSystemSuggested: !judgeId, // true if the Registrar used the system recommendation untouched
     },
     include: { complaint: { include: { consumer: true, category: true } } },
   });
@@ -166,16 +197,13 @@ async function approveReassignment(req, res) {
 }
 
 // --------------------------------------------------------------------------
-// PATCH /reassignments/:id/reject  (Clerk, Admin)
+// PATCH /reassignments/:id/reject  (Registrar)
 // --------------------------------------------------------------------------
 async function rejectReassignment(req, res) {
   const { id } = req.params;
-  const request = await prisma.reassignmentRequest.findUnique({ where: { id }, include: { complaint: { select: { benchId: true } } } });
+  const request = await prisma.reassignmentRequest.findUnique({ where: { id } });
   if (!request) throw ApiError.notFound('Reassignment request not found');
   if (request.status !== 'PENDING') throw ApiError.badRequest(`This request has already been ${request.status.toLowerCase()}`);
-  if (req.user.role === 'CLERK' && !(isCourtClerk(req.user) && req.user.benchId === request.complaint.benchId)) {
-    throw ApiError.forbidden('This request belongs to another bench');
-  }
 
   await prisma.reassignmentRequest.update({
     where: { id },

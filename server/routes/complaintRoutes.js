@@ -26,6 +26,7 @@ router.get('/mine', authorize('CONSUMER'), listComplaintsValidator, validate, co
 router.patch('/:id/withdraw', authorize('CONSUMER'), complaintController.withdrawComplaint);
 router.post('/:id/feedback', authorize('CONSUMER'), complaintController.submitFeedback);
 router.patch('/:id/resubmit', authorize('CONSUMER'), complaintController.resubmitComplaint);
+router.patch('/:id/reappeal', authorize('CONSUMER'), complaintController.reappealComplaint);
 
 // Lists — every role is scoped inside the controller (see services/scopeService.js)
 router.get('/', authorize('CLERK', 'JUDGE', 'REGISTRAR', 'ADMIN'), listComplaintsValidator, validate, complaintController.listComplaints);

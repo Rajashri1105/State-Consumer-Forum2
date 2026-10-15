@@ -100,6 +100,10 @@ const STAGES = {
     consumer: ['Hearing completed', () => 'The hearing for your case has been completed.'],
     party: ['Hearing completed', () => 'The hearing has been completed.'],
   },
+  FINAL_JUDGMENT_PUBLISHED: {
+    consumer: ['Final judgment published', () => 'The final judgment document is available to read and download from your case page.'],
+    party: ['Final judgment published', () => 'The final judgment document is available to read and download from the portal.'],
+  },
   CLOSED: {
     consumer: ['Verdict published — case closed', () => 'The judge has published the verdict. You can read and download it from your case page.'],
     party: ['Verdict published — case closed', () => 'The judge has published the verdict. You can read and download it from the portal.'],

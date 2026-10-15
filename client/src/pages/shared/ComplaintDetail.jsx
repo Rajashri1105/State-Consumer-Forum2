@@ -1,14 +1,14 @@
 import { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
-  Box, Typography, Paper, Grid, Stack, Divider, Button, Chip,
+  Box, Typography, Paper, Grid, Stack, Divider, Button, Chip, Alert,
   Dialog, DialogTitle, DialogContent, DialogActions, TextField,
   RadioGroup, FormControlLabel, Radio, MenuItem, IconButton,
 } from '@mui/material';
 import { toast } from 'react-toastify';
 import {
   ArrowLeft, Download, FileText, CalendarClock, Gavel, Upload,
-  CheckCircle2, XCircle, UserCog, CalendarPlus, RefreshCcw, FileSignature, Lock, Ban, FileDown, Star,
+  CheckCircle2, XCircle, UserCog, CalendarPlus, RefreshCcw, FileSignature, Ban, FileDown, Star,
   AlertTriangle, ClipboardCheck, Sparkles, Send, Landmark,
 } from 'lucide-react';
 import dayjs from 'dayjs';
@@ -32,11 +32,80 @@ const HEARING_STATUS_COLOR = {
   SCHEDULED: tokens.info, COMPLETED: tokens.success, ADJOURNED: tokens.warning, CANCELLED: tokens.inkMuted,
 };
 
-const TERMINAL_STATUSES = ['REJECTED', 'DISPOSED', 'CLOSED', 'SETTLED'];
+// REJECTED is intentionally excluded so consumers can still upload evidence before re-appealing.
+const TERMINAL_STATUSES = ['DISPOSED', 'CLOSED', 'SETTLED'];
 const NON_WITHDRAWABLE_STATUSES = ['HEARING_SCHEDULED', 'HEARING_COMPLETED', 'JUDGMENT_UPLOADED', 'DISPOSED', 'CLOSED', 'REJECTED', 'WITHDRAWN', 'SETTLED'];
-const FEEDBACK_ELIGIBLE_STATUSES = ['JUDGMENT_UPLOADED', 'DISPOSED', 'CLOSED'];
+const FEEDBACK_ELIGIBLE_STATUSES = ['DISPOSED', 'CLOSED'];
 // Statuses in which the Registrar may allot / re-allot the case to a bench.
 const ALLOTTABLE_STATUSES = ['PENDING_ALLOTMENT', 'NEEDS_MANUAL_ASSIGNMENT', 'JUDGE_ASSIGNED', 'HEARING_SCHEDULED', 'HEARING_COMPLETED'];
+
+function useDateAvailability({ date, enabled, complaintId, hearingId, scheduledTime }) {
+  const [state, setState] = useState({ loading: false, result: null, error: null });
+
+  useEffect(() => {
+    if (!enabled || !date) {
+      setState({ loading: false, result: null, error: null });
+      return undefined;
+    }
+
+    let cancelled = false;
+    setState({ loading: true, result: null, error: null });
+    const timer = setTimeout(async () => {
+      try {
+        const { data } = await hearingService.getDateAvailability({
+          ...(hearingId ? { hearingId } : { complaintId }),
+          date,
+          ...(scheduledTime ? { scheduledTime } : {}),
+        });
+        if (!cancelled) setState({ loading: false, result: data.data, error: null });
+      } catch (err) {
+        if (!cancelled) {
+          setState({
+            loading: false,
+            result: null,
+            error: err.response?.data?.message || 'Could not verify this hearing date.',
+          });
+        }
+      }
+    }, 250);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [date, enabled, complaintId, hearingId, scheduledTime]);
+
+  return state;
+}
+
+function DateAvailabilityNotice({ state, onChoose }) {
+  if (state.loading) {
+    return <Typography variant="caption" color="text.secondary">Checking judge and forum availability…</Typography>;
+  }
+  if (!state.error && (!state.result || state.result.available)) return null;
+
+  return (
+    <Alert severity={state.error ? 'error' : 'warning'}>
+      <Typography variant="body2">
+        {state.error || `${state.result.reason} Please choose another day.`}
+      </Typography>
+      {state.result?.options?.length > 0 && (
+        <Stack direction="row" flexWrap="wrap" gap={1} sx={{ mt: 1 }}>
+          {state.result.options.map((option) => (
+            <Button
+              key={option.date}
+              size="small"
+              variant="outlined"
+              onClick={() => onChoose(option.date, option.time)}
+            >
+              {dayjs(option.date).format('ddd, DD MMM')} · {option.time}
+            </Button>
+          ))}
+        </Stack>
+      )}
+    </Alert>
+  );
+}
 
 function InfoRow({ label, value }) {
   return (
@@ -78,6 +147,18 @@ export default function ComplaintDetail() {
   const [rescheduleDate, setRescheduleDate] = useState('');
   const [rescheduleTime, setRescheduleTime] = useState('');
   const [rescheduleRemarks, setRescheduleRemarks] = useState('');
+  const scheduleDateAvailability = useDateAvailability({
+    date: manualDate,
+    enabled: scheduleDialog && !useSuggested,
+    complaintId: id,
+    scheduledTime: manualTime,
+  });
+  const rescheduleDateAvailability = useDateAvailability({
+    date: rescheduleDate,
+    enabled: Boolean(rescheduleTarget),
+    hearingId: rescheduleTarget?.id,
+    scheduledTime: rescheduleTime,
+  });
   const [actionLoading, setActionLoading] = useState(false);
   const [timeSlots, setTimeSlots] = useState([
     '10:30 AM', '10:45 AM', '11:00 AM', '11:15 AM', '11:30 AM', '11:45 AM',
@@ -100,9 +181,13 @@ export default function ComplaintDetail() {
   const [completeTarget, setCompleteTarget] = useState(null);
   const [completeRemarks, setCompleteRemarks] = useState('');
   const [judgmentDialog, setJudgmentDialog] = useState(false);
-  const [judgmentFile, setJudgmentFile] = useState([]);
   const [judgmentSummary, setJudgmentSummary] = useState('');
   const [judgmentVerdict, setJudgmentVerdict] = useState('');
+  const [finalDocumentDialog, setFinalDocumentDialog] = useState(false);
+  const [consumerPresent, setConsumerPresent] = useState('Present');
+  const [oppositePartyPresent, setOppositePartyPresent] = useState('Present');
+  const [witnessDetails, setWitnessDetails] = useState('None');
+  const [advocateDetails, setAdvocateDetails] = useState('None');
 
   // -------------------- Feature 4: Notice Delivery Tracker --------------------
   const [noticeStatuses, setNoticeStatuses] = useState({}); // hearingId -> deliveries[]
@@ -129,16 +214,35 @@ export default function ComplaintDetail() {
 
   const load = () => {
     setLoading(true);
-    complaintService.getById(id)
-      .then(({ data }) => {
+    Promise.all([
+      complaintService.getById(id),
+      settingsService.getForumSettings().catch(() => null),
+    ])
+      .then(([{ data }, settingsRes]) => {
         setComplaint(data.data.complaint);
         setTimeline(data.data.timeline || []);
+
+        // Apply time slots from settings if available
+        if (settingsRes) {
+          const slots = settingsRes.data?.data?.settings?.hearingTimeSlots;
+          if (Array.isArray(slots) && slots.length) setTimeSlots(slots);
+        }
+
+        // Fetch all hearing notice statuses in parallel — one Promise per hearing
         const hearings = data.data.complaint.hearings || [];
-        hearings.forEach((h) => {
-          hearingService.getNoticeStatus(h.id)
-            .then(({ data: d }) => setNoticeStatuses((prev) => ({ ...prev, [h.id]: d.data.deliveries || [] })))
-            .catch(() => { /* non-critical */ });
-        });
+        if (hearings.length > 0) {
+          Promise.all(
+            hearings.map((h) =>
+              hearingService.getNoticeStatus(h.id)
+                .then(({ data: d }) => ({ hearingId: h.id, deliveries: d.data.deliveries || [] }))
+                .catch(() => ({ hearingId: h.id, deliveries: [] }))
+            )
+          ).then((results) => {
+            const statusMap = {};
+            results.forEach(({ hearingId, deliveries }) => { statusMap[hearingId] = deliveries; });
+            setNoticeStatuses(statusMap);
+          });
+        }
       })
       .catch((err) => toast.error(err.response?.data?.message || 'Failed to load complaint'))
       .finally(() => setLoading(false));
@@ -146,12 +250,6 @@ export default function ComplaintDetail() {
 
   useEffect(() => {
     load();
-    settingsService.getForumSettings()
-      .then(({ data }) => {
-        const slots = data.data.settings?.hearingTimeSlots;
-        if (Array.isArray(slots) && slots.length) setTimeSlots(slots);
-      })
-      .catch(() => { /* fall back to the default slots already in state */ });
     /* eslint-disable-next-line react-hooks/exhaustive-deps */
   }, [id]);
 
@@ -362,7 +460,8 @@ export default function ComplaintDetail() {
     setDownloadingReceipt(true);
     try {
       const response = await complaintService.downloadReceipt(id);
-      const blob = new Blob([response.data], { type: 'application/pdf' });
+      // response.data is already a Blob (responseType: 'blob')
+      const blob = response.data instanceof Blob ? response.data : new Blob([response.data], { type: 'application/pdf' });
       const url = window.URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
@@ -372,9 +471,34 @@ export default function ComplaintDetail() {
       link.remove();
       window.URL.revokeObjectURL(url);
     } catch (err) {
-      toast.error(err.response?.data?.message || 'Failed to download receipt');
+      // When responseType is 'blob', error response body is also a Blob — parse it to JSON to extract the message.
+      let message = 'Failed to download receipt';
+      try {
+        const errData = err.response?.data;
+        if (errData instanceof Blob) {
+          const text = await errData.text();
+          const json = JSON.parse(text);
+          message = json.message || message;
+        } else if (errData?.message) {
+          message = errData.message;
+        }
+      } catch { /* ignore parse errors */ }
+      toast.error(message);
     } finally {
       setDownloadingReceipt(false);
+    }
+  };
+
+  const handleReappeal = async () => {
+    setActionLoading(true);
+    try {
+      await complaintService.reappeal(id);
+      toast.success('Complaint re-appealed — it is back in the scrutiny queue');
+      load();
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Failed to re-appeal complaint');
+    } finally {
+      setActionLoading(false);
     }
   };
 
@@ -425,25 +549,46 @@ export default function ComplaintDetail() {
   };
 
   const handleFinalizeVerdict = async () => {
-    if (judgmentFile.length === 0 || !judgmentSummary.trim() || !judgmentVerdict.trim()) {
-      toast.error('File, summary, and verdict are all required');
+    if (!judgmentSummary.trim() || !judgmentVerdict.trim()) {
+      toast.error('Choose the party in whose favor the verdict is given and provide a summary');
       return;
     }
     setActionLoading(true);
     try {
-      const formData = new FormData();
-      formData.append('file', judgmentFile[0]);
-      formData.append('summary', judgmentSummary.trim());
-      formData.append('verdict', judgmentVerdict.trim());
-      await judgmentService.finalizeVerdict(id, formData);
-      toast.success('Verdict finalized and published to the consumer');
+      await judgmentService.submitVerdict(id, {
+        summary: judgmentSummary.trim(),
+        verdict: judgmentVerdict,
+      });
+      toast.success('Verdict submitted to the court clerk for final document preparation');
       setJudgmentDialog(false);
-      setJudgmentFile([]);
       setJudgmentSummary('');
       setJudgmentVerdict('');
       load();
     } catch (err) {
       toast.error(err.response?.data?.message || 'Failed to finalize verdict');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleFinalizeJudgmentDocument = async () => {
+    if (!witnessDetails.trim() || !advocateDetails.trim()) {
+      toast.error('Enter witness and advocate names, or enter None');
+      return;
+    }
+    setActionLoading(true);
+    try {
+      await judgmentService.finalizeDocument(id, {
+        consumerPresent: consumerPresent === 'Present',
+        oppositePartyPresent: oppositePartyPresent === 'Present',
+        witnessDetails: witnessDetails.trim(),
+        advocateDetails: advocateDetails.trim(),
+      });
+      toast.success('Final judgment document published to both parties');
+      setFinalDocumentDialog(false);
+      load();
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Failed to publish final judgment document');
     } finally {
       setActionLoading(false);
     }
@@ -512,9 +657,13 @@ export default function ComplaintDetail() {
   const isRegistrarOrAdmin = ['REGISTRAR', 'ADMIN'].includes(user?.role);
   const canManageHearings = isCourtClerk || isRegistrarOrAdmin;
   const claimedByMe = complaint.assignedClerkId === user?.id || complaint.assignedClerk?.id === user?.id;
+  const isAppeal = complaint.caseType === 'APPEAL';
 
   const isCourtClerkOfBench = isCourtClerk && Boolean(user?.benchId) && complaint.benchId === user?.benchId;
   const canResendInvite = (isRegistrarOrAdmin || isCourtClerkOfBench) && Boolean(complaint.oppositePartyEmail);
+  const canPrepareFinalJudgment = isCourtClerkOfBench && complaint.status === 'JUDGMENT_UPLOADED'
+    && Boolean(complaint.judgment) && !complaint.judgment.filePath;
+  const isAssignedJudge = user?.role === 'JUDGE' && complaint.assignedJudge?.user?.id === user.id;
 
   const canAddEvidence = user?.role === 'CONSUMER' && !TERMINAL_STATUSES.includes(complaint.status) && complaint.status !== 'WITHDRAWN';
 
@@ -587,6 +736,51 @@ export default function ComplaintDetail() {
         </Paper>
       )}
 
+      {user?.role === 'CONSUMER' && complaint.status === 'REJECTED' && complaint.reappealCount === 0 && (
+        <Paper variant="outlined" sx={{ p: 2, mb: 3, borderColor: tokens.error, backgroundColor: `${tokens.error}0D` }}>
+          <Stack direction="row" alignItems="center" gap={1}>
+            <XCircle size={18} color={tokens.error} />
+            <Typography variant="body2" fontWeight={700} color="error.dark">Your complaint was rejected by the scrutiny clerk</Typography>
+          </Stack>
+          {complaint.rejectionReason && (
+            <Typography variant="body2" sx={{ mt: 0.75, whiteSpace: 'pre-wrap' }}>
+              <strong>Reason:</strong> {complaint.rejectionReason}
+            </Typography>
+          )}
+          <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5 }}>
+            You have <strong>1 re-appeal attempt</strong> available. If you believe the rejection was incorrect or have rectified the issue, click below to send your complaint back to the scrutiny queue for a fresh review.
+            This is your only opportunity to re-appeal this complaint.
+          </Typography>
+          <Button sx={{ mt: 1.5 }} variant="contained" color="error" startIcon={<RefreshCcw size={16} />} onClick={handleReappeal} disabled={actionLoading}>
+            Re-appeal (Send back to Scrutiny) — 1 attempt remaining
+          </Button>
+        </Paper>
+      )}
+
+      {user?.role === 'CONSUMER' && complaint.status === 'REJECTED' && complaint.reappealCount >= 1 && (
+        <Paper variant="outlined" sx={{ p: 2, mb: 3, borderColor: tokens.error, backgroundColor: `${tokens.error}1A`, border: '2px solid' }}>
+          <Stack direction="row" alignItems="center" gap={1.5}>
+            <XCircle size={22} color={tokens.error} />
+            <Typography variant="body2" fontWeight={700} color="error.dark" fontSize="0.95rem">
+              Final Rejection — No Further Re-appeal Permitted
+            </Typography>
+          </Stack>
+          {complaint.rejectionReason && (
+            <Typography variant="body2" sx={{ mt: 0.75, whiteSpace: 'pre-wrap' }}>
+              <strong>Reason:</strong> {complaint.rejectionReason}
+            </Typography>
+          )}
+          <Typography variant="body2" sx={{ mt: 1, color: 'error.dark' }}>
+            Your complaint has been rejected twice by the scrutiny team. Your one permitted re-appeal has already been used.
+            This complaint cannot be reopened or re-appealed again.
+          </Typography>
+          <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.75 }}>
+            ⚠️ If you still wish to pursue the matter, please <strong>file a new complaint</strong> addressing the rejection reasons noted above.
+            The new complaint will be treated as a fresh submission.
+          </Typography>
+        </Paper>
+      )}
+
       {user?.role === 'CONSUMER' && (
         <Paper variant="outlined" sx={{ p: 2, mb: 3 }}>
           <Typography variant="subtitle2" fontWeight={700} sx={{ mb: 1.5 }}>My Actions</Typography>
@@ -644,7 +838,7 @@ export default function ComplaintDetail() {
         <Paper variant="outlined" sx={{ p: 2, mb: 3, backgroundColor: `${tokens.ashokaNavy}05` }}>
           <Typography variant="subtitle2" fontWeight={700} sx={{ mb: 1.5 }}>Court Clerk Actions{complaint.bench ? ` — ${complaint.bench.name}` : ''}</Typography>
           <Stack direction="row" gap={1.5} flexWrap="wrap" alignItems="center">
-            {(complaint.status === 'JUDGE_ASSIGNED' || complaint.status === 'HEARING_COMPLETED') && (
+            {complaint.status === 'JUDGE_ASSIGNED' && (
               <Button variant="contained" startIcon={<CalendarPlus size={16} />} onClick={openScheduleDialog}>
                 Schedule Hearing
               </Button>
@@ -654,7 +848,12 @@ export default function ComplaintDetail() {
                 {resendingInvite ? 'Sending…' : 'Resend Portal Invite'}
               </Button>
             )}
-            {!['JUDGE_ASSIGNED', 'HEARING_COMPLETED'].includes(complaint.status) && !canResendInvite && (
+            {canPrepareFinalJudgment && (
+              <Button variant="contained" startIcon={<FileSignature size={16} />} onClick={() => setFinalDocumentDialog(true)}>
+                Prepare Final Judgment Document
+              </Button>
+            )}
+            {complaint.status !== 'JUDGE_ASSIGNED' && !canResendInvite && !canPrepareFinalJudgment && (
               <Typography variant="body2" color="text.secondary">No clerk action needed at this stage.</Typography>
             )}
           </Stack>
@@ -705,9 +904,9 @@ export default function ComplaintDetail() {
                 </>
               );
             })()}
-            {complaint.status === 'HEARING_COMPLETED' && (
+            {isAssignedJudge && complaint.status === 'HEARING_COMPLETED' && (
               <Button variant="contained" startIcon={<FileSignature size={16} />} onClick={() => setJudgmentDialog(true)}>
-                Finalize Verdict
+                Submit Verdict
               </Button>
             )}
             {complaint.status === 'JUDGE_ASSIGNED' && (
@@ -721,6 +920,9 @@ export default function ComplaintDetail() {
             {complaint.status === 'JUDGE_ASSIGNED' && (
               <Typography variant="body2" color="text.secondary">Waiting for the court clerk to schedule the first hearing.</Typography>
             )}
+            {isAssignedJudge && complaint.status === 'JUDGMENT_UPLOADED' && (
+              <Typography variant="body2" color="text.secondary">Your verdict is with the court clerk for final document preparation.</Typography>
+            )}
           </Stack>
         </Paper>
       )}
@@ -730,13 +932,29 @@ export default function ComplaintDetail() {
           <Paper variant="outlined" sx={{ p: 2.5, mb: 2.5 }}>
             <Typography variant="subtitle1" fontWeight={700} sx={{ mb: 2 }}>Complaint Details</Typography>
             <Grid container spacing={2}>
-              <Grid item xs={6}><InfoRow label="Product" value={complaint.product} /></Grid>
-              <Grid item xs={6}><InfoRow label="Service" value={complaint.service} /></Grid>
-              <Grid item xs={6}><InfoRow label="Invoice Number" value={complaint.invoiceNumber} /></Grid>
-              <Grid item xs={6}><InfoRow label="Purchase Date" value={complaint.purchaseDate ? dayjs(complaint.purchaseDate).format('DD MMM YYYY') : null} /></Grid>
-              <Grid item xs={6}><InfoRow label="Claim Amount" value={`₹ ${Number(complaint.complaintAmount).toLocaleString('en-IN')}`} /></Grid>
-              <Grid item xs={6}><InfoRow label="Court Fee (5% of claim)" value={`₹ ${Number(complaint.courtFee || 0).toLocaleString('en-IN')}`} /></Grid>
-              <Grid item xs={6}><InfoRow label="Jurisdiction" value={complaint.jurisdictionLevel ? complaint.jurisdictionLevel.replace(/_/g, ' ') : null} /></Grid>
+              <Grid item xs={6}><InfoRow label="Filing Type" value={complaint.caseType === 'APPEAL' ? 'Appeal from District Order' : 'New Complaint'} /></Grid>
+              <Grid item xs={6}><InfoRow label="Jurisdiction" value="State Commission" /></Grid>
+              {!isAppeal && <Grid item xs={6}><InfoRow label="Product" value={complaint.product} /></Grid>}
+              {!isAppeal && <Grid item xs={6}><InfoRow label="Service" value={complaint.service} /></Grid>}
+              {!isAppeal && <Grid item xs={6}><InfoRow label="Invoice Number" value={complaint.invoiceNumber} /></Grid>}
+              {!isAppeal && <Grid item xs={6}><InfoRow label="Purchase Date" value={complaint.purchaseDate ? dayjs(complaint.purchaseDate).format('DD MMM YYYY') : null} /></Grid>}
+              <Grid item xs={6}><InfoRow label={isAppeal ? "Amount Awarded / in Dispute" : "Claim Amount"} value={`₹ ${Number(complaint.complaintAmount).toLocaleString('en-IN')}`} /></Grid>
+              <Grid item xs={6}><InfoRow label="Court Fee" value={complaint.caseType === 'APPEAL' ? '₹ 0 (No fee for appeals)' : `₹ ${Number(complaint.courtFee || 0).toLocaleString('en-IN')}`} /></Grid>
+              
+              {complaint.caseType === 'APPEAL' && (
+                <>
+                  <Grid item xs={6}><InfoRow label="District Case Number" value={complaint.districtCaseNumber} /></Grid>
+                  <Grid item xs={6}><InfoRow label="District Commission" value={complaint.districtCommissionName} /></Grid>
+                  <Grid item xs={6}><InfoRow label="District Order Date" value={complaint.districtOrderDate ? dayjs(complaint.districtOrderDate).format('DD MMM YYYY') : null} /></Grid>
+                  {complaint.appealGrounds && (
+                    <Grid item xs={12}>
+                      <Typography variant="caption" color="text.secondary">Grounds of Appeal</Typography>
+                      <Typography variant="body2" sx={{ mt: 0.5, whiteSpace: 'pre-wrap' }}>{complaint.appealGrounds}</Typography>
+                    </Grid>
+                  )}
+                </>
+              )}
+
               <Grid item xs={12}>
                 <Stack direction="row" justifyContent="space-between" alignItems="flex-start" flexWrap="wrap" gap={1}>
                   <InfoRow label="Opposite Party (Primary)" value={`${complaint.oppositePartyName}${complaint.oppositePartyAddress ? ` — ${complaint.oppositePartyAddress}` : ''}`} />
@@ -784,7 +1002,7 @@ export default function ComplaintDetail() {
               <>
                 <Divider sx={{ my: 1.5 }} />
                 <Typography variant="caption" color="text.secondary">Consumer</Typography>
-                <Typography variant="body2" fontWeight={600}>{complaint.consumer?.name} · {complaint.consumer?.email} · {complaint.consumer?.phone || 'No phone on file'}</Typography>
+                <Typography variant="body2" fontWeight={600}>{complaint.consumerName || complaint.consumer?.name} · {complaint.consumer?.email} · {complaint.consumer?.phone || 'No phone on file'}</Typography>
               </>
             )}
 
@@ -838,7 +1056,12 @@ export default function ComplaintDetail() {
                     <Stack direction="row" alignItems="center" gap={1} sx={{ minWidth: 0 }}>
                       <FileText size={16} color={tokens.ashokaNavy} />
                       <Box sx={{ minWidth: 0 }}>
-                        <Typography variant="body2" noWrap>{ev.fileName}</Typography>
+                        <Stack direction="row" alignItems="center" gap={1}>
+                          <Typography variant="body2" noWrap>{ev.fileName}</Typography>
+                          {ev.type === 'DISTRICT_ORDER' && (
+                            <Chip size="small" label="Certified District Order" color="primary" sx={{ height: 20, fontSize: '0.65rem' }} />
+                          )}
+                        </Stack>
                         <Typography variant="caption" color="text.secondary">{dayjs(ev.uploadedAt).format('DD MMM YYYY')}</Typography>
                       </Box>
                     </Stack>
@@ -919,9 +1142,13 @@ export default function ComplaintDetail() {
                   <Typography variant="body2" fontWeight={700}>{complaint.judgment.verdict}</Typography>
                 </Stack>
                 <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>{complaint.judgment.summary}</Typography>
-                <Button variant="outlined" size="small" startIcon={<Download size={14} />} href={fileUrl(complaint.judgment.filePath)} target="_blank" rel="noopener noreferrer">
-                  Download Judgment
-                </Button>
+                {complaint.judgment.filePath ? (
+                  <Button variant="outlined" size="small" startIcon={<Download size={14} />} href={fileUrl(complaint.judgment.filePath)} target="_blank" rel="noopener noreferrer">
+                    Download Final Judgment
+                  </Button>
+                ) : (
+                  <Typography variant="caption" color="text.secondary">The final document is being prepared by the court clerk.</Typography>
+                )}
               </Box>
             ) : (
               <Typography variant="body2" color="text.secondary">Judgment has not been uploaded yet.</Typography>
@@ -1119,24 +1346,39 @@ export default function ComplaintDetail() {
           </RadioGroup>
 
           {!useSuggested && (
-            <Stack direction="row" gap={2} sx={{ mt: 2 }}>
-              <TextField
-                fullWidth type="date" label="Hearing Date" InputLabelProps={{ shrink: true }}
-                value={manualDate} onChange={(e) => setManualDate(e.target.value)}
+            <Stack gap={1.5} sx={{ mt: 2 }}>
+              <Stack direction="row" gap={2}>
+                <TextField
+                  fullWidth type="date" label="Hearing Date" InputLabelProps={{ shrink: true }}
+                  inputProps={{ min: dayjs().format('YYYY-MM-DD') }}
+                  value={manualDate} onChange={(e) => setManualDate(e.target.value)}
+                />
+                <TextField
+                  fullWidth select label="Time Slot" value={manualTime} onChange={(e) => setManualTime(e.target.value)}
+                >
+                  {timeSlots.map((t) => (
+                    <MenuItem key={t} value={t}>{t}</MenuItem>
+                  ))}
+                </TextField>
+              </Stack>
+              <DateAvailabilityNotice
+                state={scheduleDateAvailability}
+                onChoose={(date, time) => { setManualDate(date); setManualTime(time); }}
               />
-              <TextField
-                fullWidth select label="Time Slot" value={manualTime} onChange={(e) => setManualTime(e.target.value)}
-              >
-                {timeSlots.map((t) => (
-                  <MenuItem key={t} value={t}>{t}</MenuItem>
-                ))}
-              </TextField>
             </Stack>
           )}
         </DialogContent>
         <DialogActions sx={{ p: 2 }}>
           <Button onClick={() => setScheduleDialog(false)}>Cancel</Button>
-          <Button variant="contained" onClick={handleScheduleHearing} disabled={actionLoading || (!useSuggested && (!manualDate || !manualTime))}>
+          <Button
+            variant="contained"
+            onClick={handleScheduleHearing}
+            disabled={actionLoading || (!useSuggested && (
+              !manualDate || !manualTime || scheduleDateAvailability.loading
+              || Boolean(scheduleDateAvailability.error)
+              || Boolean(scheduleDateAvailability.result && !scheduleDateAvailability.result.available)
+            ))}
+          >
             {actionLoading ? 'Scheduling…' : 'Confirm Hearing'}
           </Button>
         </DialogActions>
@@ -1148,19 +1390,33 @@ export default function ComplaintDetail() {
         <DialogContent dividers>
           <Stack gap={2}>
             <Stack direction="row" gap={2}>
-              <TextField fullWidth type="date" label="New Date" InputLabelProps={{ shrink: true }} value={rescheduleDate} onChange={(e) => setRescheduleDate(e.target.value)} />
+              <TextField
+                fullWidth type="date" label="New Date" InputLabelProps={{ shrink: true }}
+                inputProps={{ min: dayjs().format('YYYY-MM-DD') }}
+                value={rescheduleDate} onChange={(e) => setRescheduleDate(e.target.value)}
+              />
               <TextField fullWidth select label="New Time" value={rescheduleTime} onChange={(e) => setRescheduleTime(e.target.value)}>
                 {timeSlots.map((t) => (
                   <MenuItem key={t} value={t}>{t}</MenuItem>
                 ))}
               </TextField>
             </Stack>
+            <DateAvailabilityNotice
+              state={rescheduleDateAvailability}
+              onChoose={(date, time) => { setRescheduleDate(date); setRescheduleTime(time); }}
+            />
             <TextField fullWidth multiline rows={2} label="Remarks (optional)" value={rescheduleRemarks} onChange={(e) => setRescheduleRemarks(e.target.value)} />
           </Stack>
         </DialogContent>
         <DialogActions sx={{ p: 2 }}>
           <Button onClick={() => setRescheduleTarget(null)}>Cancel</Button>
-          <Button variant="contained" onClick={handleReschedule} disabled={actionLoading}>
+          <Button
+            variant="contained"
+            onClick={handleReschedule}
+            disabled={actionLoading || rescheduleDateAvailability.loading
+              || Boolean(rescheduleDateAvailability.error)
+              || Boolean(rescheduleDateAvailability.result && !rescheduleDateAvailability.result.available)}
+          >
             {actionLoading ? 'Saving…' : 'Confirm New Date'}
           </Button>
         </DialogActions>
@@ -1202,34 +1458,65 @@ export default function ComplaintDetail() {
         </DialogActions>
       </Dialog>
 
-      {/* -------------------- Finalize verdict dialog (Feature 7: single auto-publish action) -------------------- */}
+      {/* -------------------- Judge verdict dialog -------------------- */}
       <Dialog open={judgmentDialog} onClose={() => setJudgmentDialog(false)} maxWidth="sm" fullWidth>
-        <DialogTitle>Finalize Verdict</DialogTitle>
+        <DialogTitle>Submit Verdict</DialogTitle>
         <DialogContent dividers>
           <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-            This publishes the judgment to the consumer immediately, closes the case, and sends a notification — there is no separate publish step.
+            Select the party in whose favor you decide the case and record the judgment summary. The court clerk will prepare the final document.
           </Typography>
           <Stack gap={2}>
             <TextField
               select fullWidth label="Verdict" value={judgmentVerdict} onChange={(e) => setJudgmentVerdict(e.target.value)}
             >
               <MenuItem value="In favor of Consumer">In favor of Consumer</MenuItem>
-              <MenuItem value="Dismissed">Dismissed</MenuItem>
-              <MenuItem value="Settled">Settled</MenuItem>
-              <MenuItem value="Partly Allowed">Partly Allowed</MenuItem>
+              <MenuItem value="In favor of Opposite Party">In favor of Opposite Party</MenuItem>
             </TextField>
             <TextField
               fullWidth multiline rows={4} label="Judgment summary"
               value={judgmentSummary} onChange={(e) => setJudgmentSummary(e.target.value)}
               placeholder="Summarize the forum's findings and directions..."
             />
-            <FileDropzone label="Judgment document" files={judgmentFile} onChange={setJudgmentFile} multiple={false} />
           </Stack>
         </DialogContent>
         <DialogActions sx={{ p: 2 }}>
           <Button onClick={() => setJudgmentDialog(false)}>Cancel</Button>
-          <Button variant="contained" startIcon={<Lock size={15} />} onClick={handleFinalizeVerdict} disabled={actionLoading}>
-            {actionLoading ? 'Finalizing…' : 'Finalize Verdict'}
+          <Button variant="contained" startIcon={<FileSignature size={15} />} onClick={handleFinalizeVerdict} disabled={actionLoading}>
+            {actionLoading ? 'Submitting…' : 'Submit Verdict'}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* -------------------- Court clerk final judgment document -------------------- */}
+      <Dialog open={finalDocumentDialog} onClose={() => setFinalDocumentDialog(false)} maxWidth="sm" fullWidth>
+        <DialogTitle>Prepare Final Judgment Document</DialogTitle>
+        <DialogContent dividers>
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+            Confirm who appeared and list the witnesses and advocates. Case, bench, party, judge, filing-date, order-date, verdict, and summary details will be added automatically.
+          </Typography>
+          <Stack gap={2}>
+            <TextField select fullWidth label="Consumer" value={consumerPresent} onChange={(e) => setConsumerPresent(e.target.value)}>
+              <MenuItem value="Present">Present</MenuItem>
+              <MenuItem value="Absent">Absent</MenuItem>
+            </TextField>
+            <TextField select fullWidth label="Opposite party" value={oppositePartyPresent} onChange={(e) => setOppositePartyPresent(e.target.value)}>
+              <MenuItem value="Present">Present</MenuItem>
+              <MenuItem value="Absent">Absent</MenuItem>
+            </TextField>
+            <TextField
+              fullWidth label="Witness(es)" value={witnessDetails} onChange={(e) => setWitnessDetails(e.target.value)}
+              helperText="Enter the names of witnesses who appeared, or None"
+            />
+            <TextField
+              fullWidth label="Advocate(s)" value={advocateDetails} onChange={(e) => setAdvocateDetails(e.target.value)}
+              helperText="Enter the names of advocates who appeared, or None"
+            />
+          </Stack>
+        </DialogContent>
+        <DialogActions sx={{ p: 2 }}>
+          <Button onClick={() => setFinalDocumentDialog(false)}>Cancel</Button>
+          <Button variant="contained" startIcon={<FileSignature size={15} />} onClick={handleFinalizeJudgmentDocument} disabled={actionLoading}>
+            {actionLoading ? 'Publishing…' : 'Generate & Publish'}
           </Button>
         </DialogActions>
       </Dialog>

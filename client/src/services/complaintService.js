@@ -29,6 +29,9 @@ export const complaintService = {
   // Consumer: fix a defective complaint and send it back to scrutiny
   resubmit: (id) => api.patch(`/complaints/${id}/resubmit`),
 
+  // Consumer: re-appeal a rejected complaint (after rectifying the rejection reason)
+  reappeal: (id) => api.patch(`/complaints/${id}/reappeal`),
+
   // Registrar: bench allotment / re-allotment ({ judgeId?, benchId?, reason? })
   getAllotmentQueue: () => api.get('/complaints/allotment-queue'),
   allot: (id, payload) => api.patch(`/complaints/${id}/allot`, payload),

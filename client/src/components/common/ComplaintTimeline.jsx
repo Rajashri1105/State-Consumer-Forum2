@@ -1,6 +1,8 @@
-import { Box, Typography } from '@mui/material';
+import { Box, Button, Typography } from '@mui/material';
+import { Download } from 'lucide-react';
 import dayjs from 'dayjs';
 import { tokens } from '../../theme/theme';
+import { fileUrl } from '../../utils/fileUrl';
 
 export default function ComplaintTimeline({ entries }) {
   if (!entries || entries.length === 0) {
@@ -24,7 +26,19 @@ export default function ComplaintTimeline({ entries }) {
             <Box sx={{ pb: isLast ? 0 : 3, minWidth: 0 }}>
               <Typography variant="body2" fontWeight={700}>{entry.stage}</Typography>
               {entry.remarks && (
-                <Typography variant="body2" color="text.secondary" sx={{ mt: 0.25 }}>{entry.remarks}</Typography>
+                <Typography variant="body2" color="text.secondary" sx={{ mt: 0.25, whiteSpace: 'pre-line' }}>{entry.remarks}</Typography>
+              )}
+              {entry.documentPath && (
+                <Button
+                  size="small"
+                  startIcon={<Download size={14} />}
+                  href={fileUrl(entry.documentPath)}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  sx={{ mt: 0.5 }}
+                >
+                  Download Final Judgment
+                </Button>
               )}
               <Typography variant="caption" color="text.disabled">
                 {dayjs(entry.createdAt).format('DD MMM YYYY, hh:mm A')}

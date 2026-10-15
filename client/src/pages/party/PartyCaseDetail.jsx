@@ -58,7 +58,7 @@ export default function PartyCaseDetail() {
           <Paper variant="outlined" sx={{ p: 2.5, mb: 3 }}>
             <Typography variant="subtitle1" fontWeight={700} sx={{ mb: 1.5 }}>The complaint</Typography>
             <Typography variant="caption" color="text.secondary">Filed by</Typography>
-            <Typography variant="body2" fontWeight={600} sx={{ mb: 1 }}>{complaint.consumer?.name}</Typography>
+            <Typography variant="body2" fontWeight={600} sx={{ mb: 1 }}>{complaint.consumerName || complaint.consumer?.name}</Typography>
             <Typography variant="caption" color="text.secondary">Against</Typography>
             <Typography variant="body2" fontWeight={600} sx={{ mb: 1 }}>{complaint.oppositePartyName} (seller: {complaint.sellerName})</Typography>
             <Typography variant="caption" color="text.secondary">Amount claimed</Typography>
@@ -88,11 +88,12 @@ export default function PartyCaseDetail() {
             )}
           </Paper>
 
-          {complaint.judgment && (
+          {complaint.judgment?.filePath && (
             <Paper variant="outlined" sx={{ p: 2.5 }}>
               <Typography variant="subtitle1" fontWeight={700} sx={{ mb: 1 }}>Verdict</Typography>
               <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap', mb: 1.5 }}>{complaint.judgment.verdict}</Typography>
-              <Button variant="outlined" size="small" startIcon={<Download size={14} />} href={fileUrl(complaint.judgment.filePath)} target="_blank" rel="noopener noreferrer">Download judgment</Button>
+              <Typography variant="body2" color="text.secondary" sx={{ whiteSpace: 'pre-wrap', mb: 1.5 }}>{complaint.judgment.summary}</Typography>
+              <Button variant="outlined" size="small" startIcon={<Download size={14} />} href={fileUrl(complaint.judgment.filePath)} target="_blank" rel="noopener noreferrer">Download final judgment</Button>
             </Paper>
           )}
         </Grid>

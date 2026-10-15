@@ -5,7 +5,11 @@ const prisma = require('../config/db');
 const config = require('../config/env');
 const ApiError = require('../utils/ApiError');
 const ApiResponse = require('../utils/ApiResponse');
-const { suggestHearingDate } = require('../services/schedulingEngine');
+const {
+  suggestHearingDate,
+  getHearingDateAvailability,
+  getHearingDateOptions,
+} = require('../services/schedulingEngine');
 const { addTimelineEntry } = require('../services/timelineService');
 const { fireWorkflowNotification } = require('../services/workflowNotifier');
 const { notifyUser } = require('../services/notificationService');
@@ -58,6 +62,44 @@ async function getSuggestedDate(req, res) {
 }
 
 // --------------------------------------------------------------------------
+// GET /hearings/availability?complaintId=...&date=...  (Clerk) — manual date check
+// --------------------------------------------------------------------------
+async function getDateAvailability(req, res) {
+  const { complaintId, hearingId, date, scheduledTime } = req.query;
+  if ((!complaintId && !hearingId) || !date || !dayjs(date).isValid()) {
+    throw ApiError.badRequest('A complaint or hearing and a valid date are required');
+  }
+
+  let judgeId;
+  let excludedHearingId;
+  if (hearingId) {
+    const hearing = await prisma.hearing.findUnique({ where: { id: hearingId }, include: { complaint: true } });
+    if (!hearing) throw ApiError.notFound('Hearing not found');
+    assertBenchClerkOrOversight(hearing.complaint, req.user);
+    judgeId = hearing.judgeId;
+    excludedHearingId = hearing.id;
+  } else {
+    const complaint = await prisma.complaint.findUnique({ where: { id: complaintId } });
+    if (!complaint) throw ApiError.notFound('Complaint not found');
+    assertBenchClerkOrOversight(complaint, req.user);
+    if (!complaint.assignedJudgeId) throw ApiError.badRequest('A judge must be assigned before scheduling a hearing');
+    judgeId = complaint.assignedJudgeId;
+  }
+
+  const availability = await getHearingDateAvailability({
+    judgeId,
+    date,
+    scheduledTime,
+    excludeHearingId: excludedHearingId,
+  });
+  const options = availability.available
+    ? []
+    : await getHearingDateOptions({ judgeId, fromDate: date, excludeHearingId: excludedHearingId });
+
+  return new ApiResponse(200, { ...availability, options }, 'Hearing date availability checked').send(res);
+}
+
+// --------------------------------------------------------------------------
 // POST /hearings  (Clerk) — Novelty #1: accept suggestion or override
 // --------------------------------------------------------------------------
 async function scheduleHearing(req, res) {
@@ -67,7 +109,7 @@ async function scheduleHearing(req, res) {
   if (!complaint) throw ApiError.notFound('Complaint not found');
   assertBenchClerkOrOversight(complaint, req.user);
   if (!complaint.assignedJudgeId) throw ApiError.badRequest('A judge must be assigned before scheduling a hearing');
-  if (!['JUDGE_ASSIGNED', 'HEARING_COMPLETED'].includes(complaint.status)) {
+  if (complaint.status !== 'JUDGE_ASSIGNED') {
     throw ApiError.badRequest(`Cannot schedule a hearing while complaint is in "${complaint.status}" status`);
   }
 
@@ -81,9 +123,15 @@ async function scheduleHearing(req, res) {
     isSystemSuggested = true;
   } else {
     if (!scheduledDate || !scheduledTime) throw ApiError.badRequest('scheduledDate and scheduledTime are required when overriding the suggestion');
-    finalDate = new Date(scheduledDate);
+    finalDate = dayjs(scheduledDate).startOf('day').toDate();
     finalTime = scheduledTime;
     isSystemSuggested = false;
+    const availability = await getHearingDateAvailability({
+      judgeId: complaint.assignedJudgeId,
+      date: scheduledDate,
+      scheduledTime: finalTime,
+    });
+    if (!availability.available) throw ApiError.badRequest(`${availability.reason} Choose another date.`);
   }
 
   const hearing = await prisma.hearing.create({
@@ -147,9 +195,17 @@ async function rescheduleHearing(req, res) {
   assertBenchClerkOrOversight(hearing.complaint, req.user);
   if (hearing.status !== 'SCHEDULED') throw ApiError.badRequest('Only scheduled hearings can be rescheduled');
 
+  const availability = await getHearingDateAvailability({
+    judgeId: hearing.judgeId,
+    date: scheduledDate,
+    scheduledTime,
+    excludeHearingId: hearing.id,
+  });
+  if (!availability.available) throw ApiError.badRequest(`${availability.reason} Choose another date.`);
+
   const updated = await prisma.hearing.update({
     where: { id },
-    data: { scheduledDate: new Date(scheduledDate), scheduledTime, remarks, isSystemSuggested: false },
+    data: { scheduledDate: dayjs(scheduledDate).startOf('day').toDate(), scheduledTime, remarks, isSystemSuggested: false },
     include: HEARING_INCLUDE,
   });
 
@@ -306,6 +362,7 @@ async function getCalendar(req, res) {
 
 module.exports = {
   getSuggestedDate,
+  getDateAvailability,
   scheduleHearing,
   rescheduleHearing,
   adjournHearing,

@@ -64,6 +64,7 @@ async function createLeave({ judgeId, startDate, endDate, reason, createdById })
         preferredDate: hearing.scheduledDate,
         priority: hearing.complaint.priority,
         preferBenchId: hearing.complaint.benchId || judgeProfile?.benchId || null,
+        leaveCreatedAt: leave.createdAt,
       });
     } catch (err) {
       logger.error('Failed to compute replacement judge recommendation:', err.message);
@@ -100,7 +101,7 @@ async function createLeave({ judgeId, startDate, endDate, reason, createdById })
       await notifyUser({
         userId: clerkId,
         title: 'Judge Absence — Hearing Needs Reassignment',
-        message: `${judgeProfile?.user?.name || 'A judge'} is on leave and has a scheduled hearing for complaint ${hearing.complaint.complaintNumber}. ${recommendation ? `Recommended: ${recommendation.judgeName} on the same/next available date.` : 'No automatic replacement slot was found — please reassign manually.'}`,
+        message: `${judgeProfile?.user?.name || 'A judge'} is on leave and has a scheduled hearing for complaint ${hearing.complaint.complaintNumber}. ${recommendation ? `Recommended: ${recommendation.judgeName} within the next two working days.` : 'No automatic replacement slot was found within two working days — please reassign manually.'}`,
         type: 'JUDGE_ABSENCE_ALERT',
         relatedComplaintId: hearing.complaintId,
       });

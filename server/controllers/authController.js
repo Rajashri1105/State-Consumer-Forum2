@@ -411,7 +411,6 @@ async function deleteAccount(req, res) {
       await tx.complaint.updateMany({
         where: { id: { in: complaintIds } },
         data: {
-          oppositePartyName: 'Deleted account',
           oppositePartyAddress: null,
           oppositePartyEmail: null,
           oppositePartyPhone: null,
@@ -422,7 +421,7 @@ async function deleteAccount(req, res) {
           complaintId: { in: complaintIds },
           email: { equals: user.email, mode: 'insensitive' },
         },
-        data: { name: 'Deleted account', address: null, email: null },
+        data: { address: null, email: null },
       });
     }
 
@@ -434,7 +433,6 @@ async function deleteAccount(req, res) {
     await tx.user.update({
       where: { id: user.id },
       data: {
-        name: user.role === 'CONSUMER' ? 'Deleted consumer' : 'Deleted opposite party',
         email: `deleted-${user.id}@deleted.invalid`,
         password: anonymizedPassword,
         phone: null,

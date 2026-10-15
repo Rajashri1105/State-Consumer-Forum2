@@ -51,6 +51,11 @@ enum ComplaintStatus {
   SETTLED
 }
 
+enum CaseType {
+  NEW_COMPLAINT
+  APPEAL
+}
+
 // Feature 1: Jurisdiction Determination Engine
 enum JurisdictionLevel {
   DISTRICT_COMMISSION
@@ -88,6 +93,7 @@ enum EvidenceType {
   WARRANTY
   IMAGE
   DOCUMENT
+  DISTRICT_ORDER
   OTHER
 }
 
@@ -349,6 +355,7 @@ model Complaint {
   title               String?           // standardized consumer vs opposite-party title
 
   consumerId          String
+  consumerName        String?
   consumer            User              @relation("ConsumerComplaints", fields: [consumerId], references: [id])
 
   categoryId          String
@@ -377,8 +384,15 @@ model Complaint {
   purchaseDate        DateTime?
   invoiceNumber       String?
   complaintAmount     Decimal           @db.Decimal(12, 2)
-  courtFee            Decimal           @default(0) @db.Decimal(12, 2) // auto-computed: 5% of complaintAmount
+  courtFee            Decimal           @default(0) @db.Decimal(12, 2) // auto-computed court fee
   description         String
+
+  // --- Case Filing Type & Appeals ---
+  caseType               CaseType          @default(NEW_COMPLAINT)
+  districtCaseNumber     String?
+  districtCommissionName String?
+  districtOrderDate      DateTime?
+  appealGrounds          String?
 
   // --- Feature 1: Jurisdiction Determination Engine ---
   jurisdictionLevel   JurisdictionLevel?
@@ -410,6 +424,7 @@ model Complaint {
   verifiedById        String?
   verifiedBy          User?             @relation("ClerkVerified", fields: [verifiedById], references: [id])
   rejectionReason     String?
+  reappealCount       Int               @default(0) // number of times consumer has re-appealed after rejection; max 1
 
   assignedClerkId     String?           // scrutiny clerk who CLAIMED this complaint from the shared intake queue
   assignedClerk       User?             @relation("ClerkAssignedComplaints", fields: [assignedClerkId], references: [id])
@@ -447,6 +462,9 @@ model Complaint {
   @@index([assignedJudgeId])
   @@index([assignedClerkId])
   @@index([categoryId])
+  // Composite indexes for common clerk queue queries
+  @@index([status, priority, createdAt])       // intake queue: status=SUBMITTED ORDER BY priority, createdAt
+  @@index([assignedClerkId, status])           // "My claimed" tab: assignedClerkId=me AND status=UNDER_VERIFICATION
   @@map("complaints")
 }
 
@@ -538,15 +556,20 @@ model Hearing {
 // --------------------------------------------------------------------------
 
 model Judgment {
-  id          String       @id @default(uuid())
-  complaintId String       @unique
-  complaint   Complaint    @relation(fields: [complaintId], references: [id], onDelete: Cascade)
-  judgeId     String
-  judge       JudgeProfile @relation(fields: [judgeId], references: [id])
-  filePath    String
-  summary     String
-  verdict     String       // e.g. "In favor of Consumer", "Dismissed", "Settled"
-  uploadedAt  DateTime     @default(now())
+  id                   String       @id @default(uuid())
+  complaintId          String       @unique
+  complaint            Complaint    @relation(fields: [complaintId], references: [id], onDelete: Cascade)
+  judgeId              String
+  judge                JudgeProfile @relation(fields: [judgeId], references: [id])
+  filePath             String?
+  summary              String
+  verdict              String
+  consumerPresent      Boolean?
+  oppositePartyPresent Boolean?
+  witnessDetails       String?
+  advocateDetails      String?
+  orderDate            DateTime?
+  uploadedAt           DateTime     @default(now())
 
   @@map("judgments")
 }
@@ -570,7 +593,7 @@ model Feedback {
 
 // --------------------------------------------------------------------------
 // JUDGE REASSIGNMENT REQUESTS (triggered by judge leave conflicts;
-// system recommends a replacement judge, clerk must approve)
+// system recommends a replacement judge, Registrar handles rescheduling)
 // --------------------------------------------------------------------------
 
 model ReassignmentRequest {

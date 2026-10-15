@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 const config = require('../config/env');
 
@@ -10,9 +11,11 @@ function generateAccessToken(user) {
 }
 
 function generateRefreshToken(user) {
-  return jwt.sign({ sub: user.id, tokenType: 'refresh' }, config.jwt.refreshSecret, {
-    expiresIn: config.jwt.refreshExpiry,
-  });
+  return jwt.sign(
+    { sub: user.id, tokenType: 'refresh', jti: crypto.randomUUID() },
+    config.jwt.refreshSecret,
+    { expiresIn: config.jwt.refreshExpiry }
+  );
 }
 
 function verifyAccessToken(token) {

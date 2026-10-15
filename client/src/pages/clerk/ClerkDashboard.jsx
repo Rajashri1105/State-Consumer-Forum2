@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link as RouterLink } from 'react-router-dom';
 import { Grid, Paper, Box, Typography, Button, Stack, Divider } from '@mui/material';
-import { ClipboardCheck, CalendarClock, CheckCircle2, XCircle, FileCheck2, Gavel, UserX, Check, AlertTriangle, Inbox, Undo2 } from 'lucide-react';
+import { ClipboardCheck, CalendarClock, CheckCircle2, XCircle, FileCheck2, Gavel, UserX, AlertTriangle, Inbox, Undo2 } from 'lucide-react';
 import { complaintService } from '../../services/complaintService';
 import { hearingService } from '../../services/hearingService';
 import { reassignmentService } from '../../services/reassignmentService';
@@ -12,7 +12,6 @@ import DocketTag from '../../components/common/DocketTag';
 import { PriorityChip } from '../../components/common/StatusChips';
 import JudgeAvailabilityPanel from '../../components/common/JudgeAvailabilityPanel';
 import { tokens } from '../../theme/theme';
-import { toast } from 'react-toastify';
 import dayjs from 'dayjs';
 
 const QUICK_ACTIONS = [
@@ -30,7 +29,6 @@ function CourtClerkDashboard() {
   const [pendingScheduling, setPendingScheduling] = useState(0);
   const [todayHearings, setTodayHearings] = useState([]);
   const [reassignments, setReassignments] = useState([]);
-  const [reassignmentActionLoading, setReassignmentActionLoading] = useState(null);
   const [delayed, setDelayed] = useState([]);
 
   useEffect(() => {
@@ -46,7 +44,7 @@ function CourtClerkDashboard() {
           complaintService.list({ status: 'CLOSED', limit: 1 }),
           complaintService.list({ status: 'JUDGE_ASSIGNED', limit: 1 }),
           hearingService.getCalendar({}),
-          reassignmentService.list('PENDING'),
+          reassignmentService.list('ACTIVE'),
           complaintService.list({ isDelayed: true, limit: 10 }),
         ]);
         if (cancelled) return;
@@ -68,32 +66,6 @@ function CourtClerkDashboard() {
     load();
     return () => { cancelled = true; };
   }, []);
-
-  const handleApproveReassignment = async (req) => {
-    setReassignmentActionLoading(req.id);
-    try {
-      await reassignmentService.approve(req.id);
-      toast.success('Reassignment approved — consumer and new judge notified');
-      setReassignments((prev) => prev.filter((r) => r.id !== req.id));
-    } catch (err) {
-      toast.error(err.response?.data?.message || 'Failed to approve reassignment');
-    } finally {
-      setReassignmentActionLoading(null);
-    }
-  };
-
-  const handleRejectReassignment = async (req) => {
-    setReassignmentActionLoading(req.id);
-    try {
-      await reassignmentService.reject(req.id);
-      toast.success('Reassignment rejected — remember to reschedule this hearing manually');
-      setReassignments((prev) => prev.filter((r) => r.id !== req.id));
-    } catch (err) {
-      toast.error(err.response?.data?.message || 'Failed to reject reassignment');
-    } finally {
-      setReassignmentActionLoading(null);
-    }
-  };
 
   if (loading) return <Loader label="Loading court clerk dashboard…" />;
 
@@ -157,7 +129,7 @@ function CourtClerkDashboard() {
             <Paper variant="outlined" sx={{ p: 2.5, mt: 2, borderColor: tokens.warning }}>
               <Stack direction="row" alignItems="center" gap={1} sx={{ mb: 2 }}>
                 <UserX size={18} color={tokens.warning} />
-                <Typography variant="subtitle1" fontWeight={700}>Judge Absence — Reassignment Requests</Typography>
+                <Typography variant="subtitle1" fontWeight={700}>Judge Absence — Hearing Rescheduling Status</Typography>
               </Stack>
               <Stack divider={<Divider />} gap={1.5}>
                 {reassignments.map((r) => (
@@ -167,30 +139,23 @@ function CourtClerkDashboard() {
                         <DocketTag>{r.complaint?.complaintNumber}</DocketTag>
                         <Typography variant="body2" sx={{ mt: 0.5 }}>
                           {r.originalJudgeName} is unavailable
-                          {r.recommendedJudgeName ? ` — recommended replacement: ${r.recommendedJudgeName}` : ' — no automatic replacement found'}
+                          {r.status === 'PENDING'
+                            ? ' — waiting for the Registrar to reschedule this hearing.'
+                            : ''}
                         </Typography>
-                        {r.recommendedDate && (
+                        {r.status === 'PENDING' && r.recommendedJudgeName && (
                           <Typography variant="caption" color="text.secondary">
-                            New slot: {dayjs(r.recommendedDate).format('DD MMM YYYY')} at {r.recommendedTime}
+                            Suggested replacement: {r.recommendedJudgeName}
+                            {r.recommendedDate && ` · ${dayjs(r.recommendedDate).format('DD MMM YYYY')} at ${r.recommendedTime}`}
+                          </Typography>
+                        )}
+                        {r.status === 'APPROVED' && (
+                          <Typography variant="body2" color="success.dark" sx={{ mt: 0.5 }}>
+                            Rescheduled to {r.hearing?.judge?.user?.name || r.recommendedJudgeName || 'replacement judge'}
+                            {' · '}{dayjs(r.hearing.scheduledDate).format('DD MMM YYYY')} at {r.hearing.scheduledTime}
                           </Typography>
                         )}
                       </Box>
-                      <Stack direction="row" gap={1}>
-                        <Button
-                          size="small" variant="contained" color="success" startIcon={<Check size={14} />}
-                          disabled={!r.recommendedJudgeId || reassignmentActionLoading === r.id}
-                          onClick={() => handleApproveReassignment(r)}
-                        >
-                          Approve
-                        </Button>
-                        <Button
-                          size="small" color="error" startIcon={<XCircle size={14} />}
-                          disabled={reassignmentActionLoading === r.id}
-                          onClick={() => handleRejectReassignment(r)}
-                        >
-                          Reject
-                        </Button>
-                      </Stack>
                     </Stack>
                   </Box>
                 ))}

@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { Link as RouterLink } from 'react-router-dom';
 import {
   Box, Typography, Paper, Grid, TextField, MenuItem, Button, Stack,
-  Divider, Pagination, InputAdornment,
+  Divider, Pagination, InputAdornment, Chip,
 } from '@mui/material';
 import { Search, FilePlus2, FileText } from 'lucide-react';
 import dayjs from 'dayjs';
@@ -111,7 +111,10 @@ export default function ComplaintList() {
                 }}
               >
                 <Box sx={{ minWidth: 0, flex: '1 1 260px' }}>
-                  <DocketTag>{c.complaintNumber}</DocketTag>
+                  <Stack direction="row" alignItems="center" gap={1}>
+                    <DocketTag>{c.complaintNumber}</DocketTag>
+                    <Chip size="small" variant="outlined" label={c.caseType === 'APPEAL' ? 'Appeal' : 'New Complaint'} color={c.caseType === 'APPEAL' ? 'secondary' : 'default'} />
+                  </Stack>
                   <Typography variant="body2" sx={{ mt: 0.5 }} noWrap>{getComplaintTitle(c)}</Typography>
                   <Typography variant="caption" color="text.secondary">
                     Filed {dayjs(c.submittedAt).format('DD MMM YYYY')} · {c.category?.name}
