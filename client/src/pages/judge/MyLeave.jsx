@@ -17,6 +17,7 @@ export default function MyLeave() {
   const [form, setForm] = useState({ startDate: '', endDate: '', reason: '' });
   const [submitting, setSubmitting] = useState(false);
   const [conflicts, setConflicts] = useState([]);
+  const today = dayjs().format('YYYY-MM-DD');
 
   const load = () => {
     setLoading(true);
@@ -31,6 +32,10 @@ export default function MyLeave() {
   const handleSubmit = async () => {
     if (!form.startDate || !form.endDate || !form.reason.trim()) {
       toast.error('Start date, end date, and reason are all required');
+      return;
+    }
+    if (dayjs(form.startDate).isBefore(dayjs(), 'day')) {
+      toast.error('Start date cannot be in the past');
       return;
     }
     if (dayjs(form.endDate).isBefore(dayjs(form.startDate))) {
@@ -78,13 +83,13 @@ export default function MyLeave() {
         <Grid container spacing={2}>
           <Grid item xs={12} sm={6}>
             <TextField
-              fullWidth type="date" label="Start Date" InputLabelProps={{ shrink: true }}
+              fullWidth type="date" label="Start Date" InputLabelProps={{ shrink: true }} inputProps={{ min: today }}
               value={form.startDate} onChange={(e) => setForm((f) => ({ ...f, startDate: e.target.value }))}
             />
           </Grid>
           <Grid item xs={12} sm={6}>
             <TextField
-              fullWidth type="date" label="End Date" InputLabelProps={{ shrink: true }}
+              fullWidth type="date" label="End Date" InputLabelProps={{ shrink: true }} inputProps={{ min: form.startDate || today }}
               value={form.endDate} onChange={(e) => setForm((f) => ({ ...f, endDate: e.target.value }))}
             />
           </Grid>

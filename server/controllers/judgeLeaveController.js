@@ -10,6 +10,20 @@ async function getOwnJudgeProfile(userId) {
   return profile;
 }
 
+function validateLeaveDates(startDate, endDate) {
+  if (!startDate || !endDate) throw ApiError.badRequest('Start date and end date are required');
+
+  const start = new Date(startDate);
+  const end = new Date(endDate);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+    throw ApiError.badRequest('Start date and end date must be valid dates');
+  }
+  if (end < start) throw ApiError.badRequest('End date cannot be before start date');
+  if (start.toISOString().slice(0, 10) < new Date().toISOString().slice(0, 10)) {
+    throw ApiError.badRequest('Start date cannot be in the past');
+  }
+}
+
 // --------------------------------------------------------------------------
 // GET /judge-leaves/mine  (Judge)
 // --------------------------------------------------------------------------
@@ -24,8 +38,8 @@ async function listMyLeaves(req, res) {
 // --------------------------------------------------------------------------
 async function createMyLeave(req, res) {
   const { startDate, endDate, reason } = req.body;
-  if (!startDate || !endDate || !reason) throw ApiError.badRequest('Start date, end date, and reason are required');
-  if (new Date(endDate) < new Date(startDate)) throw ApiError.badRequest('End date cannot be before start date');
+  if (!reason) throw ApiError.badRequest('Reason is required');
+  validateLeaveDates(startDate, endDate);
 
   const profile = await getOwnJudgeProfile(req.user.id);
   const { leave, conflictingHearings } = await judgeLeaveService.createLeave({
@@ -54,8 +68,8 @@ async function listAllLeaves(req, res) {
 // --------------------------------------------------------------------------
 async function createLeaveForJudge(req, res) {
   const { judgeId, startDate, endDate, reason } = req.body;
-  if (!judgeId || !startDate || !endDate || !reason) throw ApiError.badRequest('Judge, start date, end date, and reason are required');
-  if (new Date(endDate) < new Date(startDate)) throw ApiError.badRequest('End date cannot be before start date');
+  if (!judgeId || !reason) throw ApiError.badRequest('Judge and reason are required');
+  validateLeaveDates(startDate, endDate);
 
   const judge = await prisma.judgeProfile.findUnique({ where: { id: judgeId } });
   if (!judge) throw ApiError.badRequest('Judge not found');
